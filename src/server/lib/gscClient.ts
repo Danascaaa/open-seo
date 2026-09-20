@@ -97,7 +97,9 @@ function createGscApiClient(
     try {
       response = await fetch(url, {
         method: init?.method ?? "GET",
-        redirect: "error",
+        // Cloudflare Workers supports manual but rejects redirect:"error".
+        // Manual never follows, so bearer credentials stay on the fixed URL.
+        redirect: "manual",
         signal: AbortSignal.timeout(15_000),
         headers: {
           Authorization: `Bearer ${token}`,
@@ -204,7 +206,7 @@ export function createGscClient(opts: {
     let response: Response;
     try {
       response = await fetch(GOOGLE_USERINFO_URL, {
-        redirect: "error",
+        redirect: "manual",
         signal: AbortSignal.timeout(15_000),
         headers: { Authorization: `Bearer ${token}` },
       });
