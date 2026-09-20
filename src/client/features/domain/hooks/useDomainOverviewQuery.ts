@@ -31,5 +31,6 @@ export function useDomainOverviewQuery(input: Input) {
         },
       }),
     staleTime: 5 * 60_000,
+    retry: false,
   });
 }

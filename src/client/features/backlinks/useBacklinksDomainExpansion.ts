@@ -48,6 +48,7 @@ export function useBacklinksDomainExpansion({
         domain,
       ] as const,
       staleTime: DOMAIN_LINKS_STALE_TIME_MS,
+      retry: false,
       queryFn: () =>
         getBacklinksRows({
           data: {

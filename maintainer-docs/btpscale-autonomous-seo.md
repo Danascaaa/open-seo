@@ -112,6 +112,30 @@ flight or that a third-party vendor can never report a higher final cost.
 DataForSEO automatic 5xx retries are disabled because a failed HTTP response
 does not prove that a paid live request was not processed.
 
+Paid React Query reads also set `retry: false` at each query site: keyword
+research and SERP analysis, domain overview/keywords/pages, backlink overview
+and every backlink page/expansion, rank-tracker keyword suggestions, AI brand
+lookup/prompt exploration, and the search-tab observer sharing those paid
+queries. This is intentionally not a global QueryClient default: free database,
+GSC and configuration reads keep their normal retry behavior. React Query
+mutations retain their zero-retry default.
+
+The ledger response follows the control-plane SQL/API contract exactly:
+`actualCents` is `null` until settlement and the only states are `reserved`,
+`settled`, `uncertain`, and `released`. Provider dispatch accepts a fresh
+`reserved` response only. A direct replay, or any non-reserved state, stops
+before the provider. The sole exception is a `reserved` row read back by
+operation ID immediately after the reservation POST timed out in the same
+invocation: provider execution has not started yet, so that invocation may
+continue once. A second provider attempt is never made after an ambiguous
+provider result.
+
+Traceability limitation: DataForSEO task responses can contain a provider task
+ID, but `DataforseoApiCallCost` currently retains only `path` and `costUsd`.
+Ledger settlement therefore records the internal operation ID, not the
+provider task ID. Preserve this as a known reconciliation gap; do not claim
+provider-ID traceability until the billing envelope carries and stores it.
+
 ## Service authorization
 
 `tools/list` exposes only `OPENSEO_SERVICE_TOOLS`. Every service `tools/call`

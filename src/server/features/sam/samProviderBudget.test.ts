@@ -12,6 +12,8 @@ function reservation(id: string): BudgetReservation {
     operationId: `operation-${id}`,
     status: "reserved" as const,
     reservedCents: 100,
+    actualCents: null,
+    replayed: false,
   };
 }
 

@@ -4,11 +4,11 @@ import { AppError } from "@/server/lib/errors";
 
 const reservationSchema = z.object({
   reservationId: z.string().min(1),
-  status: z.enum(["reserved", "settled", "uncertain", "denied"]),
+  status: z.enum(["reserved", "settled", "uncertain", "released"]),
   reservedCents: z.number().int().nonnegative(),
-  actualCents: z.number().int().nonnegative().optional(),
+  actualCents: z.number().int().nonnegative().nullable().optional(),
   remainingCents: z.number().int().optional(),
-  replayed: z.boolean().optional(),
+  replayed: z.boolean(),
 });
 
 const paidOperationLimitsSchema = z.record(
@@ -95,15 +95,29 @@ async function readReservation(
     );
   }
   const parsed = reservationSchema.safeParse(body);
-  if (!parsed.success || parsed.data.status === "denied") {
+  if (!parsed.success) {
     throw new AppError(
-      parsed.success ? "INSUFFICIENT_CREDITS" : "UPSTREAM_UNAVAILABLE",
-      parsed.success
-        ? "SEO budget reservation denied"
-        : "SEO budget ledger returned an invalid response",
+      "UPSTREAM_UNAVAILABLE",
+      "SEO budget ledger returned an invalid response",
     );
   }
   return { ...parsed.data, operationId };
+}
+
+function requireDispatchableReservation(
+  reservation: BudgetReservation,
+  expectReconciledReplay: boolean,
+): BudgetReservation {
+  if (
+    reservation.status !== "reserved" ||
+    reservation.replayed !== expectReconciledReplay
+  ) {
+    throw new AppError(
+      "UPSTREAM_UNAVAILABLE",
+      `SEO budget reservation is not dispatchable (${reservation.status}${reservation.replayed ? ", replayed" : ""})`,
+    );
+  }
+  return reservation;
 }
 
 async function reconcileReservation(
@@ -162,13 +176,19 @@ export async function reserveSeoBudget(args: {
         body: JSON.stringify(body),
       },
     );
-    return await readReservation(response, operationId);
+    return requireDispatchableReservation(
+      await readReservation(response, operationId),
+      false,
+    );
   } catch (error) {
     if (error instanceof AppError) throw error;
     // A timed-out POST may have committed. Never replay it: query the
     // idempotency key once, then fail before contacting the paid provider.
     try {
-      return await reconcileReservation(baseUrl, token, operationId);
+      return requireDispatchableReservation(
+        await reconcileReservation(baseUrl, token, operationId),
+        true,
+      );
     } catch {
       throw new AppError(
         "UPSTREAM_UNAVAILABLE",

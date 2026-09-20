@@ -167,6 +167,12 @@ async function meterDataforseoCall<T>(
     provider: "dataforseo",
     category: "research",
   });
+  if (reservation.status !== "reserved") {
+    throw new AppError(
+      "UPSTREAM_UNAVAILABLE",
+      `SEO budget reservation is not dispatchable (${reservation.status})`,
+    );
+  }
   const isHostedMode = await isHostedServerAuthMode();
 
   if (!isHostedMode) {
