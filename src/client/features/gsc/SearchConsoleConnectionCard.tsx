@@ -42,6 +42,7 @@ export function SearchConsoleConnectionCard({
   const connectionQuery = useQuery(connectionOptions);
   const connection = connectionQuery.data;
   const connected = Boolean(connection?.connected);
+  const serverManaged = connection?.connectionSource === "service_account";
   const hasGrant = Boolean(connection?.currentUserHasGrant);
   const canManage = connection?.canManage === true;
   const selfHostedNeedsSetup =
@@ -186,24 +187,31 @@ export function SearchConsoleConnectionCard({
       ) : selfHostedNeedsSetup ? (
         <SelfHostedSetupWarning />
       ) : connected && !picking ? (
-        <GoogleConnectedState
-          property={connection?.siteUrl ?? ""}
-          canManageAccounts={hasGrant}
-          email={connection?.connectedByEmail}
-          onChange={() => {
-            setSiteMutation.reset();
-            disconnectMutation.reset();
-            setSelection(null);
-            setPicking(true);
-          }}
-          onDisconnect={() => {
-            setSiteMutation.reset();
-            disconnectMutation.mutate();
-          }}
-          disconnecting={disconnectMutation.isPending}
-          disabled={linking}
-          canManage={canManage}
-        />
+        <div className="space-y-2">
+          <GoogleConnectedState
+            property={connection?.siteUrl ?? ""}
+            canManageAccounts={!serverManaged && hasGrant}
+            email={connection?.connectedByEmail}
+            onChange={() => {
+              setSiteMutation.reset();
+              disconnectMutation.reset();
+              setSelection(null);
+              setPicking(true);
+            }}
+            onDisconnect={() => {
+              setSiteMutation.reset();
+              disconnectMutation.mutate();
+            }}
+            disconnecting={disconnectMutation.isPending}
+            disabled={linking}
+            canManage={!serverManaged && canManage}
+          />
+          {serverManaged ? (
+            <p className="text-xs text-base-content/60">
+              Managed by this deployment’s server configuration.
+            </p>
+          ) : null}
+        </div>
       ) : showPicker ? (
         <fieldset disabled={linking || setSiteMutation.isPending}>
           <SitePicker

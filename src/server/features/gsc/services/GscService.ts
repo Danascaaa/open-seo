@@ -5,6 +5,9 @@ import { GSC_OAUTH_PROVIDER_ID } from "@/shared/gsc";
 import { AppError } from "@/server/lib/errors";
 import {
   createGscClient,
+  createGscServiceAccountClient,
+  getGscServiceAccountProjectConfig,
+  type GscClient,
   type GscSite,
   type UrlInspectionResult,
 } from "@/server/lib/gscClient";
@@ -46,9 +49,72 @@ type GscSiteListResult = {
   }>;
 };
 
-/** Thrown when a project has no connected GSC property. */
-async function getConnection(projectId: string): Promise<GscConnection | null> {
-  return GscConnectionRepository.getByProjectId(projectId);
+export type ResolvedGscConnection = Pick<
+  GscConnection,
+  "siteUrl" | "connectedByUserId" | "gscAccountId" | "connectedAccountEmail"
+> & {
+  source: "oauth" | "service_account";
+  createdAt: GscConnection["createdAt"] | null;
+};
+
+async function assertServiceAccountProperty(
+  client: GscClient,
+  siteUrl: string,
+): Promise<void> {
+  const sites = await client.listSites();
+  const match = sites.find((site) => site.siteUrl === siteUrl);
+  if (!match) {
+    throw new AppError(
+      "FORBIDDEN",
+      "The server-managed Search Console property is not available to the configured service account.",
+    );
+  }
+  if (match.permissionLevel === SITE_UNVERIFIED_PERMISSION) {
+    throw new AppError(
+      "FORBIDDEN",
+      "The configured service account does not have verified access to this Search Console property.",
+    );
+  }
+}
+
+async function resolveConnection(projectId: string): Promise<{
+  connection: ResolvedGscConnection;
+  client: GscClient;
+} | null> {
+  const serviceConfig = await getGscServiceAccountProjectConfig(projectId);
+  if (serviceConfig) {
+    const client = createGscServiceAccountClient(serviceConfig);
+    await assertServiceAccountProperty(client, serviceConfig.siteUrl);
+    return {
+      connection: {
+        source: "service_account",
+        siteUrl: serviceConfig.siteUrl,
+        connectedByUserId: "server-managed",
+        gscAccountId: null,
+        connectedAccountEmail: null,
+        createdAt: null,
+      },
+      client,
+    };
+  }
+
+  const connection = await GscConnectionRepository.getByProjectId(projectId);
+  if (!connection) return null;
+  return {
+    connection: { ...connection, source: "oauth" },
+    client: createGscClient({
+      userId: connection.connectedByUserId,
+      gscAccountId: connection.gscAccountId ?? undefined,
+    }),
+  };
+}
+
+/** Resolve and validate the effective property. Server mappings take
+ * precedence, while removing a mapping reveals the untouched OAuth row. */
+async function getConnection(
+  projectId: string,
+): Promise<ResolvedGscConnection | null> {
+  return (await resolveConnection(projectId))?.connection ?? null;
 }
 
 /** Whether this user has linked a google-search-console grant (regardless of
@@ -146,6 +212,12 @@ async function setSite(input: {
   accountId: string;
   userId: string;
 }): Promise<GscConnection> {
+  if (await getGscServiceAccountProjectConfig(input.projectId)) {
+    throw new AppError(
+      "FORBIDDEN",
+      "This project's Search Console property is managed by server configuration.",
+    );
+  }
   const grants = await listGrantsForUser(input.userId);
   if (!grants.some((grant) => grant.accountId === input.accountId)) {
     throw new AppError(
@@ -189,6 +261,12 @@ async function setSite(input: {
 }
 
 async function disconnect(input: { projectId: string }): Promise<void> {
+  if (await getGscServiceAccountProjectConfig(input.projectId)) {
+    throw new AppError(
+      "FORBIDDEN",
+      "This project's Search Console property is managed by server configuration.",
+    );
+  }
   await GscConnectionRepository.deleteByProjectId(input.projectId);
 }
 
@@ -196,17 +274,12 @@ async function disconnect(input: { projectId: string }): Promise<void> {
 async function getPerformance(
   input: GscPerformanceInput,
 ): Promise<GscPerformanceResult> {
-  const connection = await GscConnectionRepository.getByProjectId(
-    input.projectId,
-  );
-  if (!connection) {
+  const resolved = await resolveConnection(input.projectId);
+  if (!resolved) {
     throw new GscNotConnectedError(input.projectId);
   }
+  const { connection, client } = resolved;
   const request = buildSearchAnalyticsRequest(input);
-  const client = createGscClient({
-    userId: connection.connectedByUserId,
-    gscAccountId: connection.gscAccountId ?? undefined,
-  });
   const rows = await client.querySearchAnalytics(connection.siteUrl, request);
   return {
     siteUrl: connection.siteUrl,
@@ -237,16 +310,11 @@ async function inspectUrls(input: {
   urls: string[];
   languageCode?: string;
 }): Promise<GscInspectUrlsResult> {
-  const connection = await GscConnectionRepository.getByProjectId(
-    input.projectId,
-  );
-  if (!connection) {
+  const resolved = await resolveConnection(input.projectId);
+  if (!resolved) {
     throw new GscNotConnectedError(input.projectId);
   }
-  const client = createGscClient({
-    userId: connection.connectedByUserId,
-    gscAccountId: connection.gscAccountId ?? undefined,
-  });
+  const { connection, client } = resolved;
   const results: GscUrlInspection[] = [];
   for (const url of input.urls) {
     try {

@@ -15,6 +15,9 @@ const mocks = vi.hoisted(() => {
     vi.fn<(opts: GscClientOptions) => Promise<string | null>>();
   const querySearchAnalytics =
     vi.fn<(opts: GscClientOptions) => Promise<never[]>>();
+  const serviceListSites = vi.fn<() => Promise<GscSite[]>>();
+  const serviceQuerySearchAnalytics = vi.fn<() => Promise<never[]>>();
+  const serviceInspectUrl = vi.fn<() => Promise<null>>();
   const deleteWhere = vi
     .fn<(condition: SQL) => Promise<void>>()
     .mockResolvedValue(undefined);
@@ -37,10 +40,21 @@ const mocks = vi.hoisted(() => {
     listSites,
     getUserInfoEmail,
     querySearchAnalytics,
+    serviceListSites,
+    serviceQuerySearchAnalytics,
+    serviceInspectUrl,
+    getGscServiceAccountProjectConfig: vi.fn(),
     createGscClient: vi.fn((opts: GscClientOptions) => ({
       listSites: () => listSites(opts),
       getUserInfoEmail: () => getUserInfoEmail(opts),
       querySearchAnalytics: () => querySearchAnalytics(opts),
+      inspectUrl: vi.fn(),
+    })),
+    createGscServiceAccountClient: vi.fn(() => ({
+      listSites: serviceListSites,
+      getUserInfoEmail: vi.fn(),
+      querySearchAnalytics: serviceQuerySearchAnalytics,
+      inspectUrl: serviceInspectUrl,
     })),
     upsert: vi.fn(),
     getByProjectId: vi.fn(),
@@ -54,6 +68,8 @@ vi.mock("@/db", () => ({
 }));
 vi.mock("@/server/lib/gscClient", () => ({
   createGscClient: mocks.createGscClient,
+  createGscServiceAccountClient: mocks.createGscServiceAccountClient,
+  getGscServiceAccountProjectConfig: mocks.getGscServiceAccountProjectConfig,
 }));
 vi.mock("@/server/features/gsc/repositories/GscConnectionRepository", () => ({
   GscConnectionRepository: {
@@ -69,6 +85,14 @@ const baseInput = {
   accountId: "sub-a",
   userId: "u1",
 };
+
+beforeEach(() => {
+  mocks.getGscServiceAccountProjectConfig.mockReset().mockResolvedValue(null);
+  mocks.createGscServiceAccountClient.mockClear();
+  mocks.serviceListSites.mockReset();
+  mocks.serviceQuerySearchAnalytics.mockReset().mockResolvedValue([]);
+  mocks.serviceInspectUrl.mockReset().mockResolvedValue(null);
+});
 
 describe("GscService.setSite", () => {
   beforeEach(() => {
@@ -157,6 +181,19 @@ describe("GscService.setSite", () => {
     await expect(
       GscService.setSite({ ...baseInput, siteUrl: "https://not-mine/" }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(mocks.upsert).not.toHaveBeenCalled();
+  });
+
+  it("refuses UI property changes for a server-managed project", async () => {
+    mocks.getGscServiceAccountProjectConfig.mockResolvedValue({
+      siteUrl: "sc-domain:example.com",
+      credentials: { clientEmail: "service@example.com", privateKey: "pem" },
+    });
+
+    await expect(
+      GscService.setSite({ ...baseInput, siteUrl: "https://x/" }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.createGscClient).not.toHaveBeenCalled();
     expect(mocks.upsert).not.toHaveBeenCalled();
   });
 });
@@ -371,6 +408,49 @@ describe("GscService.getPerformance", () => {
       gscAccountId: undefined,
     });
   });
+
+  it("validates a server-managed property before querying it", async () => {
+    mocks.getGscServiceAccountProjectConfig.mockResolvedValue({
+      siteUrl: "sc-domain:example.com",
+      credentials: { clientEmail: "service@example.com", privateKey: "pem" },
+    });
+    mocks.serviceListSites.mockResolvedValue([
+      { siteUrl: "sc-domain:example.com", permissionLevel: "siteFullUser" },
+    ]);
+
+    await GscService.getPerformance({
+      projectId: "p1",
+      startDate: "2026-01-01",
+      endDate: "2026-01-31",
+    });
+
+    expect(mocks.serviceListSites).toHaveBeenCalledOnce();
+    expect(mocks.serviceQuerySearchAnalytics).toHaveBeenCalledOnce();
+    expect(mocks.serviceListSites.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.serviceQuerySearchAnalytics.mock.invocationCallOrder[0],
+    );
+    expect(mocks.createGscClient).not.toHaveBeenCalled();
+  });
+
+  it("refuses an unmapped service-account property before a data query", async () => {
+    mocks.getGscServiceAccountProjectConfig.mockResolvedValue({
+      siteUrl: "sc-domain:not-granted.example",
+      credentials: { clientEmail: "service@example.com", privateKey: "pem" },
+    });
+    mocks.serviceListSites.mockResolvedValue([
+      { siteUrl: "sc-domain:example.com", permissionLevel: "siteFullUser" },
+    ]);
+
+    await expect(
+      GscService.getPerformance({
+        projectId: "p1",
+        startDate: "2026-01-01",
+        endDate: "2026-01-31",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.serviceQuerySearchAnalytics).not.toHaveBeenCalled();
+    expect(mocks.createGscClient).not.toHaveBeenCalled();
+  });
 });
 
 describe("GscService.disconnect", () => {
@@ -379,5 +459,17 @@ describe("GscService.disconnect", () => {
     await GscService.disconnect({ projectId: "p1" });
     expect(mocks.deleteByProjectId).toHaveBeenCalledWith("p1");
     expect(mocks.dbDelete).not.toHaveBeenCalled();
+  });
+
+  it("refuses to disconnect a server-managed project", async () => {
+    mocks.getGscServiceAccountProjectConfig.mockResolvedValue({
+      siteUrl: "sc-domain:example.com",
+      credentials: { clientEmail: "service@example.com", privateKey: "pem" },
+    });
+
+    await expect(
+      GscService.disconnect({ projectId: "p1" }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.deleteByProjectId).not.toHaveBeenCalled();
   });
 });
