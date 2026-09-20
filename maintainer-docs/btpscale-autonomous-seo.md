@@ -121,6 +121,12 @@ personal API-key authentication paths are preserved. Paid calls from the UI,
 MCP and cron still fail closed when their project or exact paid-operation cost
 is not configured.
 
+The deployed pilot allowlist contains exactly eight MCP tools:
+`whoami`, `research_keywords`, `get_domain_overview`, `get_rank_tracker`,
+`estimate_rank_tracker_cost`, `run_rank_tracker`, `get_ranked_keywords`, and
+the read-only `get_search_console_performance`. Adding a tool requires a
+reviewed redeploy; discovery never expands this list dynamically.
+
 ## Rollback
 
 Before deployment, retain the previously deployed Worker version. Roll back
@@ -150,19 +156,29 @@ provider responses.
 
 - Private URL: `https://open-seo-selfhost.daniel-344.workers.dev`
 - App Worker: `open-seo-selfhost`; bundle hash
-  `d3bde724fcc1797ed297a86b0f51cee5b17d7f5b9622461745d39725f5706867`
+  `02538c18ea821088245094840de93d647156215f0b5bb2e15d5e1871e6e435ac`
 - Audit Worker: `open-seo-selfhost-audit`; bundle hash
   `81df487b00142431c28d2049045c96b42149c6e767d04fa024c533073bf53306`
 - Human Access: `daniel@btpscale.fr`, `selam@btpscale.fr`
 - Machine headers stored outside Git: `CF_ACCESS_CLIENT_ID`,
   `CF_ACCESS_CLIENT_SECRET`, `OPENSEO_SERVICE_TOKEN`
-- Paid registry: `{}`. A live `research_keywords` request was refused locally;
-  no DataForSEO paid request was dispatched.
+- Paid registry: the exact nine per-call ceilings recorded in
+  [`btpscale-seo-pilot-activation-preflight.md`](./btpscale-seo-pilot-activation-preflight.md).
+  The central runtime remained stopped during the deployment smoke; no
+  DataForSEO request was dispatched by that smoke.
 - Health: authenticated `/api/health` returned `status: ok`,
   `cloudflare_access`, DataForSEO set, and database ok. Anonymous UI and health
   requests redirect to Access.
 - MCP: machine-authenticated `tools/list` returned HTTP 200 and exactly the
-  seven configured tools.
+  eight configured tools. An invalid application token returned HTTP 401 and
+  a project outside the allowlist was refused.
+- GSC service-account mapping is server-managed for BTPScale
+  (`sc-domain:btpscale.fr`) and Luvabat (`sc-domain:luvabat.fr`) only. Real
+  `get_search_console_performance` calls through MCP and the deployed Worker
+  returned HTTP 200 with `ok: true` for both projects over `last_28_days`
+  (`query`, `web`, `final`, `rowLimit: 10`): 4 rows for BTPScale and 10 rows for
+  Luvabat, covering 2026-08-20 through 2026-09-17. Carnet Renovation returned
+  `gsc_oauth_not_configured`; the human UI state was not observed.
 
 Projects use France (`2250`) and French (`fr`):
 
