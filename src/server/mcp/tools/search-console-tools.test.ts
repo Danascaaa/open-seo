@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   getProjectForOrganization: vi.fn(),
   isHostedServerAuthMode: vi.fn(),
   hasSelfHostedGoogleOAuthConfig: vi.fn(),
+  hasGscServiceAccountProjectConfig: vi.fn(),
   GscService: {
     getPerformance: vi.fn(),
     inspectUrls: vi.fn(),
@@ -19,6 +20,10 @@ vi.mock("@/server/lib/runtime-env", () => ({
 }));
 vi.mock("@/server/features/google/oauth-config", () => ({
   hasSelfHostedGoogleOAuthConfig: mocks.hasSelfHostedGoogleOAuthConfig,
+}));
+vi.mock("@/server/lib/gscClient", () => ({
+  GscServiceAccountError: class GscServiceAccountError extends Error {},
+  hasGscServiceAccountProjectConfig: mocks.hasGscServiceAccountProjectConfig,
 }));
 vi.mock("@/server/features/projects/services/ProjectService", () => ({
   ProjectService: {
@@ -47,6 +52,7 @@ describe("search console MCP tools", () => {
     });
     mocks.isHostedServerAuthMode.mockResolvedValue(true);
     mocks.hasSelfHostedGoogleOAuthConfig.mockResolvedValue(false);
+    mocks.hasGscServiceAccountProjectConfig.mockResolvedValue(false);
   });
 
   it("returns performance rows on success and passes filters through", async () => {
@@ -275,6 +281,49 @@ describe("search console MCP tools", () => {
       expect.objectContaining({ projectId: "project_1" }),
     );
     expect(result.structuredContent).toMatchObject({ ok: true });
+  });
+
+  it("allows a self-hosted project mapped to a service account without OAuth", async () => {
+    mocks.isHostedServerAuthMode.mockResolvedValue(false);
+    mocks.hasSelfHostedGoogleOAuthConfig.mockResolvedValue(false);
+    mocks.hasGscServiceAccountProjectConfig.mockResolvedValue(true);
+    mocks.GscService.getPerformance.mockResolvedValue({
+      siteUrl: "sc-domain:example.com",
+      connectedBy: null,
+      request: {
+        dimensions: ["query"],
+        startDate: "2026-04-27",
+        endDate: "2026-05-25",
+        rowLimit: 1000,
+      },
+      rows: [],
+    });
+
+    const result =
+      await searchConsoleTools.getSearchConsolePerformanceTool.handler(
+        { projectId: "project_1" },
+        toolContext,
+      );
+
+    expect(result.structuredContent).toMatchObject({ ok: true });
+    expect(mocks.GscService.getPerformance).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "project_1" }),
+    );
+  });
+
+  it("authorizes the project before checking service-account configuration", async () => {
+    mocks.getProjectForOrganization.mockResolvedValue(null);
+    mocks.hasGscServiceAccountProjectConfig.mockClear();
+    mocks.GscService.getPerformance.mockClear();
+
+    await expect(
+      searchConsoleTools.getSearchConsolePerformanceTool.handler(
+        { projectId: "foreign-project" },
+        toolContext,
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.hasGscServiceAccountProjectConfig).not.toHaveBeenCalled();
+    expect(mocks.GscService.getPerformance).not.toHaveBeenCalled();
   });
 
   it("inspects multiple URLs and reports partial failures inline", async () => {

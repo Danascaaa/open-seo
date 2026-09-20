@@ -5,6 +5,14 @@ impressions, positions, and URL inspection data, straight from Google.
 
 It's **optional**: OpenSEO runs fine without it, just without Search Console data.
 
+OpenSEO supports two connection modes:
+
+- **Interactive OAuth**, described below, lets users connect and change their
+  own properties.
+- **Server-managed service account**, described at the end of this page, binds
+  selected projects to fixed read-only properties. It is intended for private
+  deployments where the operator already has a Search Console service account.
+
 ## What you'll need
 
 - A Google account with access to your verified Search Console property.
@@ -116,3 +124,35 @@ user on the OAuth consent screen (while the app is in Testing mode). Add it unde
 **Connected, but no properties to pick** — the Google account you authorized
 doesn't have a verified property in Search Console. Verify the site in
 [Search Console](https://search.google.com/search-console) first, then reconnect.
+
+## Server-managed service account
+
+This mode does not require a Google OAuth client. Configure both server-side
+values:
+
+| Variable                            | Storage          | Value                                                                                               |
+| ----------------------------------- | ---------------- | --------------------------------------------------------------------------------------------------- |
+| `GSC_SERVICE_ACCOUNT_JSON`          | encrypted secret | The complete Google service-account JSON credential. Never commit it.                               |
+| `GSC_SERVICE_ACCOUNT_PROJECTS_JSON` | server variable  | A JSON object mapping each permitted OpenSEO project UUID to one exact Search Console property URL. |
+
+Example mapping with placeholder values:
+
+```json
+{
+  "00000000-0000-4000-8000-000000000000": "sc-domain:example.com",
+  "11111111-1111-4111-8111-111111111111": "https://www.example.org/"
+}
+```
+
+Grant the service account access in Search Console before adding a mapping.
+OpenSEO exchanges a signed JWT for a token with only the
+`webmasters.readonly` scope, calls `sites.list`, and requires an exact verified
+property match before any performance or URL-inspection request. A property not
+returned for that service account is refused.
+
+Mappings are authoritative and read-only in the OpenSEO UI. Organization and
+project authorization still run before Google is contacted. An existing OAuth
+connection remains stored but is ignored while its project has a server
+mapping; removing the mapping restores the OAuth path. A malformed or missing
+service-account credential for a mapped project fails closed and does not fall
+back to OAuth.

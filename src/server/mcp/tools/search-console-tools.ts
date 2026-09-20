@@ -9,6 +9,10 @@ import { projectIdSchema } from "@/server/mcp/schemas";
 import { buildDashboardUrl } from "@/server/mcp/urls";
 import { hasSelfHostedGoogleOAuthConfig } from "@/server/features/google/oauth-config";
 import { isHostedServerAuthMode } from "@/server/lib/runtime-env";
+import {
+  GscServiceAccountError,
+  hasGscServiceAccountProjectConfig,
+} from "@/server/lib/gscClient";
 import { GscService } from "@/server/features/gsc/services/GscService";
 import {
   GSC_DATE_RANGES,
@@ -64,21 +68,23 @@ function connectGscUrl(baseUrl: string, projectId: string): string {
   return buildDashboardUrl(baseUrl, `/p/${projectId}/search-performance`);
 }
 
-/** Self-hosted GSC requires the operator to provide a Google OAuth client and
- *  BETTER_AUTH_SECRET. Hosted mode always has both; self-hosted tools return this
- *  setup nudge before attempting a token lookup when either is missing. */
+/** Self-hosted GSC accepts either the existing OAuth flow or a server-managed
+ * service account mapped to this exact project. */
 async function missingSelfHostedGoogleClientResponse(
   context: ProjectAuthContext,
   projectId: string,
 ) {
-  const [hosted, configured] = await Promise.all([
-    isHostedServerAuthMode(),
-    hasSelfHostedGoogleOAuthConfig(),
-  ]);
-  if (hosted || configured) return null;
+  const [hosted, oauthConfigured, serviceAccountConfigured] = await Promise.all(
+    [
+      isHostedServerAuthMode(),
+      hasSelfHostedGoogleOAuthConfig(),
+      hasGscServiceAccountProjectConfig(projectId),
+    ],
+  );
+  if (hosted || oauthConfigured || serviceAccountConfigured) return null;
 
   return mcpResponse({
-    text: `This self-hosted OpenSEO deployment is not configured for Search Console yet. Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and BETTER_AUTH_SECRET, then reconnect Search Console from the project's settings page. Setup docs: ${GSC_SELF_HOSTED_SETUP_DOCS_URL}`,
+    text: `This self-hosted OpenSEO deployment is not configured for Search Console yet. Configure either Google OAuth or a server-managed service account for this project. Setup docs: ${GSC_SELF_HOSTED_SETUP_DOCS_URL}`,
     meta: buildProjectMeta(context, projectId),
     structuredContent: {
       ok: false,
@@ -107,6 +113,7 @@ function describeGscError(error: unknown): string {
   if (error instanceof GscTokenError) {
     return "The Search Console connection has expired or was revoked. Reconnect it to continue.";
   }
+  if (error instanceof GscServiceAccountError) return error.message;
   if (error instanceof GscApiError) {
     return error.message;
   }

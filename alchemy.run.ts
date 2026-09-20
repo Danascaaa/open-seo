@@ -314,6 +314,13 @@ const dataEnv = {
   BETTER_AUTH_SECRET: optionalSecret("BETTER_AUTH_SECRET"),
   GOOGLE_CLIENT_ID: optionalVar("GOOGLE_CLIENT_ID"),
   GOOGLE_CLIENT_SECRET: optionalSecret("GOOGLE_CLIENT_SECRET"),
+  // Server-managed GSC is an OAuth alternative for explicitly mapped
+  // projects. The credential stays a secret; property mappings are server-only
+  // vars and never enter the client bundle.
+  GSC_SERVICE_ACCOUNT_JSON: optionalSecret("GSC_SERVICE_ACCOUNT_JSON"),
+  GSC_SERVICE_ACCOUNT_PROJECTS_JSON: optionalVar(
+    "GSC_SERVICE_ACCOUNT_PROJECTS_JSON",
+  ),
   OPENROUTER_API_KEY: optionalSecret("OPENROUTER_API_KEY"),
   OPENROUTER_MODEL: optionalVar("OPENROUTER_MODEL"),
   SEO_LEDGER_BASE_URL: optionalVar("SEO_LEDGER_BASE_URL"),
