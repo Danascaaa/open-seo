@@ -46,11 +46,13 @@ async function config(): Promise<{
   token: string;
   paidOperationLimits: Record<string, number>;
 }> {
-  const [baseUrl, token, limitsJson] = await Promise.all([
+  const [baseUrl, tokenV2, tokenV1, limitsJson] = await Promise.all([
     getOptionalEnvValue("SEO_LEDGER_BASE_URL"),
+    getOptionalEnvValue("SEO_LEDGER_TOKEN_V2"),
     getOptionalEnvValue("SEO_LEDGER_TOKEN"),
     getOptionalEnvValue("SEO_PAID_OPERATION_LIMITS_JSON"),
   ]);
+  const token = tokenV2 ?? tokenV1;
   const parsedLimits = paidOperationLimitsSchema.safeParse(
     parseJson(limitsJson ?? "{}"),
   );

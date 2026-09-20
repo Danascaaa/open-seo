@@ -37,11 +37,46 @@ commit them.
   `CF-Access-Client-Id`/`CF-Access-Client-Secret`, plus
   `OPENSEO_SERVICE_TOKEN` as the normal bearer credential.
 
+For the first private initialization only,
+`OPENSEO_BOOTSTRAP_DISABLED_PAID=1` permits deployment without a DataForSEO
+credential. It requires `DATAFORSEO_API_KEY` to remain unset and
+`SEO_PAID_OPERATION_LIMITS_JSON={}`. The UI, authentication, D1, KV, R2 and
+project records remain available, while every metered DataForSEO/OpenRouter
+path fails before provider dispatch. A placeholder key is rejected.
+
+Set `CF_ACCESS_PROVISION_SERVICE_TOKEN=1` to let Alchemy create the initial
+one-year Access service token and keep its client secret redacted in the
+Cloudflare-backed Alchemy state store. The associated Access application uses
+the narrow `/mcp*` path so it covers the MCP endpoint and protocol suffixes
+without authorizing UI routes. Use `CF_ACCESS_SERVICE_TOKEN_ID` instead when a
+token already exists; never configure both.
+
+Cloudflare Workers.dev can evaluate the hostname-wide Access application before
+its more specific path application. The same Service Auth policy is therefore
+attached to both applications. This does not grant application access to UI
+routes: OpenSEO consumes the service bearer only on `/mcp`, and normal UI
+resolution still requires an Access identity carrying an allowed e-mail.
+
 Interactive Cloudflare Access still admits only the configured
 `ACCESS_ALLOWED_EMAILS`. The Access service policy matches `/mcp` only; the
 OpenSEO bearer is then checked by the Worker before any MCP tool is exposed.
 The service token does not become a browser session and does not authorize UI
 or account routes.
+
+Behind Cloudflare Access, clients send the OpenSEO application credential in
+`X-OpenSEO-Service-Token`; Access may consume or replace `Authorization` while
+validating its own `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers.
+Plain Bearer authentication remains a compatibility fallback outside Access.
+
+On the Cloudflare path, OpenSEO verifies the signed Access JWT against the
+service application's own `SERVICE_POLICY_AUD` and requires its service-token
+`common_name` claim before applying the project/tool allowlists. The dedicated
+header selects this route but does not replace the signed Access proof.
+
+Cloudflare `secret_text` values are write-only, so Alchemy cannot reliably
+diff a rotated value under the same binding name. Runtime reads the versioned
+`OPENSEO_SERVICE_TOKEN_V2` and `SEO_LEDGER_TOKEN_V2` bindings first; the v1
+names remain rollback fallbacks only.
 
 ## Budget behavior
 
@@ -108,3 +143,34 @@ Deployment requires all of the following:
 
 No paid provider call is part of validation. Unit tests use mocked ledger and
 provider responses.
+
+## Observed self-host deployment — 2026-09-21
+
+- Private URL: `https://open-seo-selfhost.daniel-344.workers.dev`
+- App Worker: `open-seo-selfhost`; bundle hash
+  `d3bde724fcc1797ed297a86b0f51cee5b17d7f5b9622461745d39725f5706867`
+- Audit Worker: `open-seo-selfhost-audit`; bundle hash
+  `81df487b00142431c28d2049045c96b42149c6e767d04fa024c533073bf53306`
+- Human Access: `daniel@btpscale.fr`, `selam@btpscale.fr`
+- Machine headers stored outside Git: `CF_ACCESS_CLIENT_ID`,
+  `CF_ACCESS_CLIENT_SECRET`, `OPENSEO_SERVICE_TOKEN`
+- Paid registry: `{}`. A live `research_keywords` request was refused locally;
+  no DataForSEO paid request was dispatched.
+- Health: authenticated `/api/health` returned `status: ok`,
+  `cloudflare_access`, DataForSEO set, and database ok. Anonymous UI and health
+  requests redirect to Access.
+- MCP: machine-authenticated `tools/list` returned HTTP 200 and exactly the
+  seven configured tools.
+
+Projects use France (`2250`) and French (`fr`):
+
+| Project | ID | Domain |
+| --- | --- | --- |
+| BTPScale | `29d32756-aacc-4659-9aa9-ace2098b6a3f` | `btpscale.fr` |
+| Luvabat | `850a3ac9-8a43-4e98-a706-05d5222e8469` | `luvabat.fr` |
+| Carnet Rénovation Essonne | `8a3efc32-f947-44c1-b5bd-93afbf122b0f` | `carnet-renovation.fr` |
+
+Rollback preserves data: redeploy the previous Git commit with the same
+`selfhost` stage. Alchemy updates the Worker versions in place and keeps the
+D1, KV and R2 resources. Do not run `alchemy destroy`; that is the destructive
+teardown path and deletes the deployment data.

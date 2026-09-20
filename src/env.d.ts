@@ -25,6 +25,7 @@ declare namespace Cloudflare {
     BYPASS_EMAIL_VERIFICATION?: string;
     TEAM_DOMAIN?: string;
     POLICY_AUD?: string;
+    SERVICE_POLICY_AUD?: string;
     POSTHOG_PUBLIC_KEY?: string;
     POSTHOG_HOST?: string;
     BETTER_AUTH_SECRET?: string;
@@ -53,7 +54,8 @@ declare namespace Cloudflare {
     TURNSTILE_SITE_KEY?: string;
 
     // DataForSEO API Basic auth value (base64 of login:password)
-    DATAFORSEO_API_KEY: string;
+    DATAFORSEO_API_KEY?: string;
+    OPENSEO_BOOTSTRAP_DISABLED_PAID?: string;
 
     // OpenRouter API key for the SAM in-app chat agent.
     OPENROUTER_API_KEY?: string;
@@ -64,11 +66,13 @@ declare namespace Cloudflare {
     // central ledger can atomically reserve their full category budget.
     SEO_LEDGER_BASE_URL?: string;
     SEO_LEDGER_TOKEN?: string;
+    SEO_LEDGER_TOKEN_V2?: string;
     SEO_PAID_OPERATION_LIMITS_JSON?: string;
 
     // Dedicated MCP service identity. The token is never exposed to the UI;
     // projects and tools are comma-separated server-side allowlists.
     OPENSEO_SERVICE_TOKEN?: string;
+    OPENSEO_SERVICE_TOKEN_V2?: string;
     OPENSEO_SERVICE_EMAIL?: string;
     OPENSEO_SERVICE_PROJECT_IDS?: string;
     OPENSEO_SERVICE_TOOLS?: string;

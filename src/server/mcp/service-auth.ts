@@ -1,6 +1,7 @@
 import { MCP_SCOPE } from "@/lib/oauth-resource";
 import { resolveSharedWorkspaceContext } from "@/middleware/ensure-user/delegated";
 import { getEnvValueSync } from "@/server/lib/runtime-env";
+import { verifyCloudflareAccessPayload } from "@/middleware/ensure-user/cloudflareAccess";
 import { createWorkersOAuthMcpProps, MCP_ROUTE } from "@/server/mcp/context";
 import { getPublicOrigin } from "@/server/mcp/public-origin";
 import { handlePinnedOpenSeoMcpRequest } from "@/server/mcp/transport";
@@ -39,13 +40,49 @@ export async function handleMcpServiceRequest(
   ctx: ExecutionContext,
 ): Promise<Response | null> {
   if (new URL(request.url).pathname !== MCP_ROUTE) return null;
-  const expected = getEnvValueSync(env, "OPENSEO_SERVICE_TOKEN");
-  if (!expected) return null;
+  const expected =
+    getEnvValueSync(env, "OPENSEO_SERVICE_TOKEN_V2") ??
+    getEnvValueSync(env, "OPENSEO_SERVICE_TOKEN");
+  const dedicatedToken = request.headers.get("x-openseo-service-token");
+  const servicePolicyAud = getEnvValueSync(env, "SERVICE_POLICY_AUD");
+  if (dedicatedToken && servicePolicyAud) {
+    try {
+      const payload = await verifyCloudflareAccessPayload(
+        request.headers,
+        servicePolicyAud,
+      );
+      if (typeof payload.common_name !== "string" || !payload.common_name) {
+        return new Response("Service identity required", { status: 403 });
+      }
+    } catch {
+      return new Response("Service authentication failed", { status: 403 });
+    }
+  } else if (!expected) {
+    if (request.headers.has("x-openseo-service-token")) {
+      console.warn(
+        "mcp-service-auth rejected configured=false dedicatedHeader=true matched=false",
+      );
+    }
+    return null;
+  }
 
+  // Cloudflare Access may consume/replace Authorization while authenticating
+  // its own service token. Prefer a dedicated application credential header;
+  // retain Bearer as a compatibility fallback outside Access.
   const candidate = request.headers
     .get("Authorization")
     ?.replace(/^Bearer /i, "");
-  if (!candidate || !(await tokensEqual(candidate, expected))) return null;
+  const matched =
+    Boolean(dedicatedToken && servicePolicyAud) ||
+    (candidate ? await tokensEqual(candidate, expected ?? "") : false);
+  if (!matched) {
+    if (request.headers.has("x-openseo-service-token")) {
+      console.warn(
+        "mcp-service-auth rejected configured=true dedicatedHeader=true matched=false",
+      );
+    }
+    return null;
+  }
 
   const email = getEnvValueSync(env, "OPENSEO_SERVICE_EMAIL");
   const allowedProjectIds = csv(

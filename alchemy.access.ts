@@ -9,6 +9,7 @@
 // workflow's Access verify step).
 
 import * as Cloudflare from "alchemy/Cloudflare";
+import type { Input } from "alchemy";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 
@@ -65,6 +66,7 @@ export const emailAccessGate = (options: {
   applicationName: string;
   domain: string;
   emails: string[];
+  additionalPolicyIds?: Input<string>[];
 }) =>
   Effect.gen(function* () {
     const allow = yield* Cloudflare.Access.Policy(options.policyId, {
@@ -76,7 +78,11 @@ export const emailAccessGate = (options: {
       type: "self_hosted",
       name: options.applicationName,
       domain: options.domain,
-      policies: [allow.policyId],
+      // Service Auth must precede the identity Allow rule. Access evaluates
+      // application policies in order; putting the email rule first redirects
+      // headless clients to interactive login before their service token can
+      // be considered.
+      policies: [...(options.additionalPolicyIds ?? []), allow.policyId],
     });
   });
 
@@ -88,7 +94,7 @@ export const serviceAccessGate = (options: {
   policyName: string;
   applicationName: string;
   domain: string;
-  serviceTokenId: string;
+  serviceTokenId: Input<string>;
 }) =>
   Effect.gen(function* () {
     const allow = yield* Cloudflare.Access.Policy(options.policyId, {
@@ -96,10 +102,14 @@ export const serviceAccessGate = (options: {
       decision: "non_identity",
       include: [{ serviceToken: { tokenId: options.serviceTokenId } }],
     });
-    return yield* Cloudflare.Access.Application(options.applicationId, {
-      type: "self_hosted",
-      name: options.applicationName,
-      domain: options.domain,
-      policies: [allow.policyId],
-    });
+    const application = yield* Cloudflare.Access.Application(
+      options.applicationId,
+      {
+        type: "self_hosted",
+        name: options.applicationName,
+        domain: options.domain,
+        policies: [allow.policyId],
+      },
+    );
+    return { application, policyId: allow.policyId };
   });

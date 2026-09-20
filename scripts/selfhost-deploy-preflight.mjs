@@ -9,6 +9,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import chalk from "chalk";
+import { validatePaidProviderDeployMode } from "./selfhost-deploy-mode.mjs";
 
 const cmd = chalk.cyan;
 const em = chalk.yellow;
@@ -43,10 +44,28 @@ for (const line of readFileSync(envFile, "utf8").split("\n")) {
   const match = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
   if (match) env[match[1]] = match[2].replace(/^(["'])(.*)\1$/, "$2");
 }
-if (!env.DATAFORSEO_API_KEY) {
+const paidProviderModeErrors = validatePaidProviderDeployMode(env);
+if (paidProviderModeErrors.length > 0) {
   fail(
-    `${em("DATAFORSEO_API_KEY")} is not set in ${envFile} — see docs/DATAFORSEO_API_KEY.md for how to get one.`,
+    ...paidProviderModeErrors.map((message) => em(message)),
+    "",
+    `Use ${cmd("OPENSEO_BOOTSTRAP_DISABLED_PAID=1")} with ${cmd("SEO_PAID_OPERATION_LIMITS_JSON={}")}`,
+    "only for a private initialization deploy with every paid provider call disabled.",
   );
+}
+if (
+  env.CF_ACCESS_SERVICE_TOKEN_ID &&
+  env.CF_ACCESS_PROVISION_SERVICE_TOKEN === "1"
+) {
+  fail(
+    `${em("CF_ACCESS_SERVICE_TOKEN_ID")} and ${em("CF_ACCESS_PROVISION_SERVICE_TOKEN=1")} are mutually exclusive.`,
+  );
+}
+if (
+  env.CF_ACCESS_PROVISION_SERVICE_TOKEN &&
+  env.CF_ACCESS_PROVISION_SERVICE_TOKEN !== "1"
+) {
+  fail(`${em("CF_ACCESS_PROVISION_SERVICE_TOKEN")} must be exactly 1.`);
 }
 // When both are set, the deploy provisions no Access resources (hand-managed
 // application) and needs neither ACCESS_ALLOWED_EMAILS nor the access:write

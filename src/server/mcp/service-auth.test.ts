@@ -20,6 +20,11 @@ const mocks = vi.hoisted(() => ({
         ctx: ExecutionContext,
       ) => Promise<Response>
     >(),
+  verifyCloudflareAccessPayload: vi.fn(),
+}));
+
+vi.mock("@/middleware/ensure-user/cloudflareAccess", () => ({
+  verifyCloudflareAccessPayload: mocks.verifyCloudflareAccessPayload,
 }));
 
 vi.mock("@/middleware/ensure-user/delegated", () => ({
@@ -43,6 +48,7 @@ const env = {
   OPENSEO_SERVICE_EMAIL: "automation@example.com",
   OPENSEO_SERVICE_PROJECT_IDS: "project-1,project-2",
   OPENSEO_SERVICE_TOOLS: "whoami,research_keywords",
+  SERVICE_POLICY_AUD: "service-audience",
 };
 
 describe("MCP service authentication", () => {
@@ -55,6 +61,9 @@ describe("MCP service authentication", () => {
     mocks.handlePinnedOpenSeoMcpRequest.mockResolvedValue(
       Response.json({ ok: true }),
     );
+    mocks.verifyCloudflareAccessPayload.mockResolvedValue({
+      common_name: "service.access",
+    });
   });
 
   it("pins the service identity to configured projects and tools", async () => {
@@ -73,6 +82,23 @@ describe("MCP service authentication", () => {
       allowedProjectIds: ["project-1", "project-2"],
       allowedTools: ["whoami", "research_keywords"],
     });
+  });
+
+  it("accepts the dedicated token header when an edge proxy owns Authorization", async () => {
+    const response = await handleMcpServiceRequest(
+      new Request("https://seo.example/mcp", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer edge-owned-token",
+          "X-OpenSEO-Service-Token": "service-secret",
+        },
+      }),
+      env,
+      ctx,
+    );
+
+    expect(response?.status).toBe(200);
+    expect(mocks.handlePinnedOpenSeoMcpRequest).toHaveBeenCalledOnce();
   });
 
   it("does not consume another credential's bearer token", async () => {
