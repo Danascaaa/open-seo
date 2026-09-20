@@ -46,6 +46,14 @@ import { getPublicOrigin } from "@/server/mcp/public-origin";
 import { MCP_SCOPE } from "@/lib/oauth-resource";
 import { AuthRepository } from "@/server/auth/repositories/AuthRepository";
 import type { ToolAuthContext } from "@/server/mcp/context";
+/* eslint-disable max-lines */
+import {
+  type BudgetReservation,
+  commitSeoBudget,
+  markSeoBudgetUncertain,
+  providerUsdToCents,
+  reserveSeoBudget,
+} from "@/server/budget/ledger";
 
 // SAM's read-only view of the project's shared memory. The block has no `set`
 // provider, so Think exposes no set_context tool for it; writes go through the
@@ -147,6 +155,8 @@ export class SamChatAgent extends Think {
   private turnUnbilledUsd = 0;
   private turnMonthlyRemaining: number | null = null;
   private billing: Promise<void> = Promise.resolve();
+  private turnBudgetReservation: BudgetReservation | null = null;
+  private turnProviderUsd = 0;
 
   // Turn telemetry: armed in beforeTurn, fed by the step and tool hooks,
   // reported once as `sam:turn` when the turn ends by any route (response,
@@ -235,13 +245,38 @@ export class SamChatAgent extends Think {
   // Compaction summaries run outside the step loop (so outside onStepFinish),
   // on the same model at low reasoning; their cost joins the turn's total.
   private async summarizeForCompaction(prompt: string): Promise<string> {
-    const result = await generateText({
-      model: this.buildModel("low"),
-      prompt,
-    });
-    this.recordSpend(openRouterCostUsd(result.providerMetadata));
-    this.telemetry.compaction();
-    return result.text;
+    const ctx = await withPgClient(() => this.loadSamContext());
+    if (!ctx) throw new Error("SAM session no longer exists");
+    const ownsReservation = this.turnBudgetReservation === null;
+    const reservation =
+      this.turnBudgetReservation ??
+      (await reserveSeoBudget({
+        projectId: ctx.project.id,
+        tool: "openrouter:sam-compaction",
+        provider: "openrouter",
+        category: "writing",
+      }));
+    try {
+      const result = await generateText({
+        model: this.buildModel("low"),
+        prompt,
+      });
+      const costUsd = openRouterCostUsd(result.providerMetadata);
+      this.recordSpend(costUsd);
+      if (ownsReservation) {
+        await commitSeoBudget(reservation, providerUsdToCents(costUsd));
+      }
+      this.telemetry.compaction();
+      return result.text;
+    } catch (error) {
+      if (ownsReservation) {
+        await markSeoBudgetUncertain(
+          reservation,
+          error instanceof Error ? error.name : "compaction failure",
+        ).catch(() => {});
+      }
+      throw error;
+    }
   }
 
   private async loadSamContext(): Promise<SamContext | null> {
@@ -314,6 +349,8 @@ export class SamChatAgent extends Think {
     // summary can land after the previous flush, and it is the same org's
     // spend either way.
     this.turnMonthlyRemaining = null;
+    this.turnBudgetReservation = null;
+    this.turnProviderUsd = 0;
     const turn = this.telemetry.beginTurn(turnCtx.continuation);
     return withPgClient(async (): Promise<TurnConfig> => {
       const ctx = await this.loadSamContext();
@@ -366,6 +403,20 @@ export class SamChatAgent extends Think {
           "You no longer have access to this organization, so I can't continue this chat.",
         );
       }
+
+      try {
+        this.turnBudgetReservation = await reserveSeoBudget({
+          projectId: ctx.project.id,
+          tool: "openrouter:sam-turn",
+          provider: "openrouter",
+          category: "writing",
+        });
+      } catch {
+        turn.refusal = "budget";
+        return this.refusalTurn(
+          "The SEO spending budget could not be reserved, so I did not call the model. Try again after the budget status is reconciled.",
+        );
+      }
       const authContext: ToolAuthContext = {
         userId: ctx.row.userId,
         userEmail: ctx.userEmail,
@@ -397,6 +448,7 @@ export class SamChatAgent extends Think {
 
   onStepFinish(ctx: StepContext): void {
     const costUsd = openRouterCostUsd(ctx.providerMetadata);
+    this.turnProviderUsd += costUsd;
     this.recordSpend(costUsd);
     this.telemetry.step(ctx, costUsd);
   }
@@ -451,6 +503,7 @@ export class SamChatAgent extends Think {
 
   async onChatResponse(result: ChatResponseResult): Promise<void> {
     this.flushSpend();
+    this.settleTurnBudget("committed");
     this.ctx.waitUntil(
       this.telemetry.report(
         result.status,
@@ -495,6 +548,7 @@ export class SamChatAgent extends Think {
     console.error("[sam] chat turn error", ctx?.stage, error);
     // A stopped or failed turn still consumed what it consumed.
     this.flushSpend();
+    this.settleTurnBudget("uncertain", error);
     this.telemetry.error(error, ctx, this.messages, this.billing);
     return error;
   }
@@ -506,6 +560,37 @@ export class SamChatAgent extends Think {
   private flushSpend(): void {
     this.recordSpend(0, { flush: true });
     this.ctx.waitUntil(this.billing);
+  }
+
+  private settleTurnBudget(
+    outcome: "committed" | "uncertain",
+    error?: unknown,
+  ): void {
+    const reservation = this.turnBudgetReservation;
+    if (!reservation) return;
+    this.turnBudgetReservation = null;
+    const costUsd = this.turnProviderUsd;
+    this.turnProviderUsd = 0;
+    this.billing = this.billing
+      .then(() =>
+        outcome === "committed"
+          ? commitSeoBudget(reservation, providerUsdToCents(costUsd))
+          : markSeoBudgetUncertain(
+              reservation,
+              error instanceof Error ? error.name : "model failure",
+            ),
+      )
+      .catch((settlementError: unknown) => {
+        // A failed settlement leaves the conservative reservation held. Do
+        // not retry here: the response may have committed server-side.
+        console.error("[sam] budget settlement failed", {
+          operationId: reservation.operationId,
+          error:
+            settlementError instanceof Error
+              ? settlementError.message
+              : String(settlementError),
+        });
+      });
   }
 
   // Think's chat recovery re-runs an interrupted turn: after a Durable Object

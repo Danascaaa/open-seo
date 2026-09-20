@@ -154,6 +154,15 @@ function createRequestHandler(
   };
 }
 
+export function handlePinnedOpenSeoMcpRequest(
+  request: Request,
+  props: McpProps,
+  env: unknown,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  return createRequestHandler(props)(request, env, ctx);
+}
+
 // Hosted credentials (OAuth grants and API keys) are user-scoped: the
 // organizationId they carry is only the fallback context for tools with no
 // project argument, so keep it while the membership holds, else rebind to the

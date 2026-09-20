@@ -27,6 +27,7 @@ import { sweepDubReferredOrganizations } from "@/server/referrals/dub";
 import { maybeSendSelfHostHeartbeat } from "@/server/lib/self-host-telemetry";
 import { handleGdprStorageErasure } from "@/server/gdpr/storage-erasure";
 import { GDPR_STORAGE_ERASURE_PATH } from "@/shared/gdpr-erasure";
+import { handleMcpServiceRequest } from "@/server/mcp/service-auth";
 
 const startHandler = createStartHandler(defaultStreamHandler);
 
@@ -135,15 +136,24 @@ function fetch(
   return withPgClient(() => Promise.resolve(handleFetch(request, env, ctx)));
 }
 
-function handleFetch(
+async function handleFetch(
   request: Request,
   env: Env,
   ctx: ExecutionContext,
-): Response | Promise<Response> {
+): Promise<Response> {
   const authMode = getAuthMode(env.AUTH_MODE);
   const publicRequest = requestWithPublicOrigin(request);
   const pathname = new URL(publicRequest.url).pathname;
   ctx.waitUntil(maybeSendSelfHostHeartbeat(pathname));
+
+  if (pathname === MCP_ROUTE) {
+    const serviceResponse = await handleMcpServiceRequest(
+      publicRequest,
+      env,
+      ctx,
+    );
+    if (serviceResponse) return serviceResponse;
+  }
 
   if (pathname === GDPR_STORAGE_ERASURE_PATH) {
     return handleGdprStorageErasure(publicRequest, env);

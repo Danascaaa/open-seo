@@ -13,6 +13,7 @@ import {
   HOSTED_PROD_STAGE,
   readWorkersSubdomain,
   requireAllowedEmails,
+  serviceAccessGate,
   workerName,
 } from "./alchemy.access.ts";
 
@@ -179,7 +180,8 @@ const resolveSelfHostAccess = (
   Effect.gen(function* () {
     let teamDomain = yield* optionalVar("TEAM_DOMAIN");
     let policyAud: Alchemy.Input<string> = yield* optionalVar("POLICY_AUD");
-    if (!provision || (teamDomain && policyAud)) {
+    const serviceTokenId = yield* optionalVar("CF_ACCESS_SERVICE_TOKEN_ID");
+    if (!provision || (teamDomain && policyAud && !serviceTokenId)) {
       return { teamDomain, policyAud };
     }
     const { accountId } = yield* yield* Cloudflare.CloudflareEnvironment;
@@ -255,6 +257,17 @@ const resolveSelfHostAccess = (
       policyAud = application.aud;
     }
 
+    if (serviceTokenId) {
+      yield* serviceAccessGate({
+        policyId: "SelfHostAllowSeoService",
+        applicationId: "SelfHostSeoServiceAccess",
+        policyName: `open-seo ${stage} SEO service`,
+        applicationName: `open-seo ${stage} MCP service`,
+        domain: `${workerName(stage)}.${subdomain}/mcp`,
+        serviceTokenId,
+      });
+    }
+
     return { teamDomain, policyAud };
   });
 
@@ -272,6 +285,14 @@ const dataEnv = {
   GOOGLE_CLIENT_SECRET: optionalSecret("GOOGLE_CLIENT_SECRET"),
   OPENROUTER_API_KEY: optionalSecret("OPENROUTER_API_KEY"),
   OPENROUTER_MODEL: optionalVar("OPENROUTER_MODEL"),
+  SEO_LEDGER_BASE_URL: optionalVar("SEO_LEDGER_BASE_URL"),
+  SEO_LEDGER_TOKEN: optionalSecret("SEO_LEDGER_TOKEN"),
+  SEO_PAID_OPERATION_LIMITS_JSON: optionalVar("SEO_PAID_OPERATION_LIMITS_JSON"),
+  OPENSEO_SERVICE_TOKEN: optionalSecret("OPENSEO_SERVICE_TOKEN"),
+  OPENSEO_SERVICE_EMAIL: optionalVar("OPENSEO_SERVICE_EMAIL"),
+  OPENSEO_SERVICE_PROJECT_IDS: optionalVar("OPENSEO_SERVICE_PROJECT_IDS"),
+  OPENSEO_SERVICE_TOOLS: optionalVar("OPENSEO_SERVICE_TOOLS"),
+  CF_ACCESS_SERVICE_TOKEN_ID: optionalVar("CF_ACCESS_SERVICE_TOKEN_ID"),
   AUTUMN_SECRET_KEY: optionalSecret("AUTUMN_SECRET_KEY"),
   AUTUMN_WEBHOOK_SECRET: optionalSecret("AUTUMN_WEBHOOK_SECRET"),
   DUB_API_KEY: optionalSecret("DUB_API_KEY"),
@@ -398,6 +419,9 @@ export default Alchemy.Stack(
         // path reads — DataForSEO (Lighthouse), Autumn (metering), PostHog
         // (capture). No auth/OAuth/Loops/Turnstile secrets.
         DATAFORSEO_API_KEY: dataEnv.DATAFORSEO_API_KEY,
+        SEO_LEDGER_BASE_URL: dataEnv.SEO_LEDGER_BASE_URL,
+        SEO_LEDGER_TOKEN: dataEnv.SEO_LEDGER_TOKEN,
+        SEO_PAID_OPERATION_LIMITS_JSON: dataEnv.SEO_PAID_OPERATION_LIMITS_JSON,
         AUTUMN_SECRET_KEY: dataEnv.AUTUMN_SECRET_KEY,
         POSTHOG_PUBLIC_KEY: dataEnv.POSTHOG_PUBLIC_KEY,
         POSTHOG_HOST: dataEnv.POSTHOG_HOST,

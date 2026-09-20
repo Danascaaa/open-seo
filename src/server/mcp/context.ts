@@ -33,6 +33,10 @@ export type ToolAuthContext = {
   // on the MCP path; absent on hand-built contexts (SAM), which name
   // themselves at the tool instead.
   clientLabel?: string;
+  servicePolicy?: {
+    allowedProjectIds: string[];
+    allowedTools: string[];
+  };
 };
 
 export type ToolContext = {
@@ -70,6 +74,12 @@ const applicationAuthContextSchema = z.object({
   // visible on a later tools/call, and this transport never populates
   // ServerContext.http.req.
   userAgent: z.string().optional(),
+  servicePolicy: z
+    .object({
+      allowedProjectIds: z.array(z.string().min(1)).min(1),
+      allowedTools: z.array(z.string().min(1)).min(1),
+    })
+    .optional(),
 });
 
 type ApplicationAuthContext = z.infer<typeof applicationAuthContextSchema>;

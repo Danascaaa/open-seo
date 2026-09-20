@@ -59,6 +59,19 @@ declare namespace Cloudflare {
     OPENROUTER_API_KEY?: string;
     // Optional OpenRouter model slug override (defaults in openrouter.ts).
     OPENROUTER_MODEL?: string;
+
+    // BTPScale control plane. Paid provider calls fail closed unless the
+    // central ledger can atomically reserve their full category budget.
+    SEO_LEDGER_BASE_URL?: string;
+    SEO_LEDGER_TOKEN?: string;
+    SEO_PAID_OPERATION_LIMITS_JSON?: string;
+
+    // Dedicated MCP service identity. The token is never exposed to the UI;
+    // projects and tools are comma-separated server-side allowlists.
+    OPENSEO_SERVICE_TOKEN?: string;
+    OPENSEO_SERVICE_EMAIL?: string;
+    OPENSEO_SERVICE_PROJECT_IDS?: string;
+    OPENSEO_SERVICE_TOOLS?: string;
   }
 }
 
