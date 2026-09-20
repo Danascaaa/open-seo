@@ -57,6 +57,13 @@ import {
 } from "@/server/lib/dataforseo/ai";
 import { isHostedServerAuthMode } from "@/server/lib/runtime-env";
 import { AppError } from "@/server/lib/errors";
+import {
+  commitSeoBudget,
+  markSeoBudgetUncertain,
+  providerUsdToCents,
+  releaseSeoBudget,
+  reserveSeoBudget,
+} from "@/server/budget/ledger";
 
 export { mapDataforseoPathToCreditFeature };
 
@@ -80,6 +87,7 @@ function meter<I, T>(
       customer,
       () => fetcher(input),
       input.creditFeature ?? defaultFeature,
+      `dataforseo:${fetcher.name || "unknown"}`,
     );
 }
 
@@ -151,19 +159,38 @@ async function meterDataforseoCall<T>(
   customer: BillingCustomerContext,
   execute: () => Promise<DataforseoApiResponse<T>>,
   creditFeature?: CreditFeature,
+  budgetTool = "dataforseo:unknown",
 ): Promise<T> {
+  const reservation = await reserveSeoBudget({
+    projectId: customer.projectId,
+    tool: budgetTool,
+    provider: "dataforseo",
+    category: "research",
+  });
   const isHostedMode = await isHostedServerAuthMode();
 
   if (!isHostedMode) {
-    const result = await execute();
-    return result.data;
+    try {
+      const result = await execute();
+      await commitAfterPaidCall(reservation, result.billing.costUsd);
+      return result.data;
+    } catch (error) {
+      await settleDataforseoFailure(reservation, error);
+      throw error;
+    }
   }
 
-  const billingCustomer = await getOrCreateOrganizationCustomer(customer);
-
-  const { monthlyRemaining } = await assertUsageCreditsAvailable(
-    billingCustomer.id,
-  );
+  let billingCustomer: { id: string };
+  let monthlyRemaining: number;
+  try {
+    billingCustomer = await getOrCreateOrganizationCustomer(customer);
+    ({ monthlyRemaining } = await assertUsageCreditsAvailable(
+      billingCustomer.id,
+    ));
+  } catch (error) {
+    await releaseSeoBudget(reservation, "hosted credit gate refused call");
+    throw error;
+  }
 
   let result: DataforseoApiResponse<T>;
   try {
@@ -176,6 +203,7 @@ async function meterDataforseoCall<T>(
       // (costUsd > 0), fall through to the normal charge + capture path so the
       // spend stays metered and visible instead of silently eaten.
       if (error.isInvalidField && error.billing.costUsd <= 0) {
+        await releaseSeoBudget(reservation, "provider rejected unbilled input");
         throw new AppError("VALIDATION_ERROR", error.message);
       }
       await trackDataforseoCost({
@@ -185,6 +213,9 @@ async function meterDataforseoCall<T>(
         monthlyRemaining,
         creditFeature,
       });
+      await commitAfterPaidCall(reservation, error.billing.costUsd);
+    } else {
+      await settleDataforseoFailure(reservation, error);
     }
     throw error;
   }
@@ -196,8 +227,55 @@ async function meterDataforseoCall<T>(
     monthlyRemaining,
     creditFeature,
   });
+  await commitAfterPaidCall(reservation, result.billing.costUsd);
 
   return result.data;
+}
+
+async function commitAfterPaidCall(
+  reservation: Awaited<ReturnType<typeof reserveSeoBudget>>,
+  costUsd: number,
+): Promise<void> {
+  try {
+    await commitSeoBudget(reservation, providerUsdToCents(costUsd));
+  } catch (error) {
+    // The full category remains reserved when settlement is unavailable, so
+    // returning the provider result cannot open room for another paid call.
+    console.error("seo-budget.settlement-failed", {
+      operationId: reservation.operationId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function settleDataforseoFailure(
+  reservation: Awaited<ReturnType<typeof reserveSeoBudget>>,
+  error: unknown,
+): Promise<void> {
+  try {
+    if (
+      error instanceof DataforseoChargedTaskError &&
+      error.billing.costUsd <= 0
+    ) {
+      await releaseSeoBudget(reservation, "provider confirmed zero cost");
+      return;
+    }
+    // A network/timeout/HTTP failure after dispatch does not prove the vendor
+    // skipped billing. Preserve the reservation and require reconciliation;
+    // never replay the provider request from here.
+    await markSeoBudgetUncertain(
+      reservation,
+      error instanceof Error ? error.name : "unknown provider failure",
+    );
+  } catch (settlementError) {
+    console.error("seo-budget.uncertain-settlement-failed", {
+      operationId: reservation.operationId,
+      error:
+        settlementError instanceof Error
+          ? settlementError.message
+          : String(settlementError),
+    });
+  }
 }
 
 async function trackDataforseoCost(args: {

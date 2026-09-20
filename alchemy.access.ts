@@ -79,3 +79,27 @@ export const emailAccessGate = (options: {
       policies: [allow.policyId],
     });
   });
+
+/** Machine-only Access boundary for the exact /mcp path. The token itself is
+ * created out-of-band so its one-time secret can go straight to the vault. */
+export const serviceAccessGate = (options: {
+  policyId: string;
+  applicationId: string;
+  policyName: string;
+  applicationName: string;
+  domain: string;
+  serviceTokenId: string;
+}) =>
+  Effect.gen(function* () {
+    const allow = yield* Cloudflare.Access.Policy(options.policyId, {
+      name: options.policyName,
+      decision: "non_identity",
+      include: [{ serviceToken: { tokenId: options.serviceTokenId } }],
+    });
+    return yield* Cloudflare.Access.Application(options.applicationId, {
+      type: "self_hosted",
+      name: options.applicationName,
+      domain: options.domain,
+      policies: [allow.policyId],
+    });
+  });

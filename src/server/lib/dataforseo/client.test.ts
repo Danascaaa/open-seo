@@ -14,13 +14,33 @@ interface TrackCallArg {
   properties?: { balanceFeatureId: string };
 }
 
-const { checkMock, trackMock, getOrCreateMock, isHostedServerAuthModeMock } =
-  vi.hoisted(() => ({
-    checkMock: vi.fn(),
-    trackMock: vi.fn<(arg: TrackCallArg) => void>(),
-    getOrCreateMock: vi.fn(),
-    isHostedServerAuthModeMock: vi.fn(),
-  }));
+const {
+  checkMock,
+  trackMock,
+  getOrCreateMock,
+  isHostedServerAuthModeMock,
+  reserveSeoBudgetMock,
+  commitSeoBudgetMock,
+  releaseSeoBudgetMock,
+  markSeoBudgetUncertainMock,
+} = vi.hoisted(() => ({
+  checkMock: vi.fn(),
+  trackMock: vi.fn<(arg: TrackCallArg) => void>(),
+  getOrCreateMock: vi.fn(),
+  isHostedServerAuthModeMock: vi.fn(),
+  reserveSeoBudgetMock: vi.fn(),
+  commitSeoBudgetMock: vi.fn(),
+  releaseSeoBudgetMock: vi.fn(),
+  markSeoBudgetUncertainMock: vi.fn(),
+}));
+
+vi.mock("@/server/budget/ledger", () => ({
+  reserveSeoBudget: reserveSeoBudgetMock,
+  commitSeoBudget: commitSeoBudgetMock,
+  releaseSeoBudget: releaseSeoBudgetMock,
+  markSeoBudgetUncertain: markSeoBudgetUncertainMock,
+  providerUsdToCents: (costUsd: number) => Math.ceil(costUsd * 100),
+}));
 
 vi.mock("cloudflare:workers", () => ({
   waitUntil: vi.fn(),
@@ -111,6 +131,7 @@ const billingCustomer = {
   organizationId: "org_123",
   userId: "user_123",
   userEmail: "alice@example.com",
+  projectId: "project-123",
 };
 
 const backlinksInput = {
@@ -144,6 +165,16 @@ function mockDataforseoResult(costUsd: number) {
 describe("meterDataforseoCall with split balances", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    reserveSeoBudgetMock.mockResolvedValue({
+      reservationId: "reservation-1",
+      operationId: "operation-1",
+      status: "reserved",
+      reservedCents: 500,
+      remainingCents: 1000,
+    });
+    commitSeoBudgetMock.mockResolvedValue(undefined);
+    releaseSeoBudgetMock.mockResolvedValue(undefined);
+    markSeoBudgetUncertainMock.mockResolvedValue(undefined);
   });
 
   it("skips billing in non-hosted mode", async () => {

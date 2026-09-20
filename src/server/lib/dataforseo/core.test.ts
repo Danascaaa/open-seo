@@ -11,7 +11,7 @@ afterEach(() => {
 });
 
 describe("DataForSEO transport", () => {
-  it("retries a transient 5xx on idempotent reads and returns the parsed envelope", async () => {
+  it("does not retry a paid call after an ambiguous 5xx", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response("upstream failure", { status: 503 }))
@@ -20,8 +20,8 @@ describe("DataForSEO transport", () => {
 
     await expect(
       dataforseoPost("/v3/backlinks/summary/live", []),
-    ).resolves.toEqual({ status_code: 20000, tasks: [] });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    ).rejects.toMatchObject({ code: "UPSTREAM_UNAVAILABLE" });
+    expect(fetchMock).toHaveBeenCalledOnce();
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("https://api.dataforseo.com/v3/backlinks/summary/live");

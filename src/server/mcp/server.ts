@@ -86,6 +86,8 @@ import {
   listSiteAuditsTool,
 } from "@/server/mcp/tools/site-audit-cleanup-tools";
 import { whoamiTool } from "@/server/mcp/tools/whoami";
+import { MCP_AUTH_CONTEXT_PROP } from "@/server/mcp/context";
+import { AppError } from "@/server/lib/errors";
 
 type ToolSchema = z.ZodType | z.ZodRawShape;
 
@@ -113,6 +115,8 @@ type OpenSeoToolDefinition<Input extends ToolSchema> = {
   ) => CallToolResult | Promise<CallToolResult>;
 };
 
+const SERVICE_UNSCOPED_TOOLS = new Set(["whoami"]);
+
 function registerOpenSeoTool<Input extends ToolSchema>(
   server: McpServer,
   tool: OpenSeoToolDefinition<Input>,
@@ -136,10 +140,32 @@ function registerOpenSeoTool<Input extends ToolSchema>(
       outputSchema,
     },
     (args, context) => {
+      const toolContext = createMcpToolContext(context, authProps);
+      const policy = toolContext.auth.servicePolicy;
+      if (policy) {
+        const projectId =
+          typeof args === "object" &&
+          args !== null &&
+          "projectId" in args &&
+          typeof args.projectId === "string"
+            ? args.projectId
+            : null;
+        if (
+          (!projectId && !SERVICE_UNSCOPED_TOOLS.has(tool.name)) ||
+          (projectId && !policy.allowedProjectIds.includes(projectId))
+        ) {
+          throw new AppError(
+            "FORBIDDEN",
+            projectId
+              ? `Service credential is not authorized for project ${projectId}`
+              : `Service credential cannot call unscoped tool ${tool.name}`,
+          );
+        }
+      }
       return handler(
         // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- args were validated against the tool's own inputSchema just above
         args as ToolArgs<Input>,
-        createMcpToolContext(context, authProps),
+        toolContext,
       );
     },
   );
@@ -175,7 +201,11 @@ export function createOpenSeoMcpServer(authProps: McpProps) {
 
   const register = <Input extends ToolSchema>(
     tool: OpenSeoToolDefinition<Input>,
-  ) => registerOpenSeoTool(server, tool, authProps);
+  ) => {
+    const policy = authProps[MCP_AUTH_CONTEXT_PROP].servicePolicy;
+    if (policy && !policy.allowedTools.includes(tool.name)) return;
+    registerOpenSeoTool(server, tool, authProps);
+  };
 
   register(whoamiTool);
   register(listProjectsTool);

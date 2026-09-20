@@ -14,7 +14,10 @@ const MAX_DATAFORSEO_ERROR_PAYLOAD_LENGTH = 1600;
 const DATAFORSEO_REQUEST_TIMEOUT_MS = 60_000;
 // Retry idempotent reads on transient 5xx. Total attempts = retries + 1; the
 // shared request-timeout signal still caps overall wall time.
-const DATAFORSEO_MAX_RETRIES = 2;
+// A paid live request that returns 5xx may already have been processed and
+// billed. Do not replay it automatically; the budget reservation becomes
+// uncertain and an operator reconciles it by idempotency key.
+const DATAFORSEO_MAX_RETRIES = 0;
 const DATAFORSEO_RETRY_BACKOFF_MS = 250;
 
 /**

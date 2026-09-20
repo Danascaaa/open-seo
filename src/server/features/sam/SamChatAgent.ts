@@ -4,6 +4,7 @@ import type {
   ChatRecoveryContext,
   ChatRecoveryOptions,
   ChatResponseResult,
+  PrepareStepContext,
   SaveMessagesResult,
   Session,
   StepContext,
@@ -20,7 +21,7 @@ import { eq } from "drizzle-orm";
 import { db, withPgClient } from "@/db";
 import { user } from "@/db/schema";
 import {
-  openRouterCostUsd,
+  requireOpenRouterCostUsd,
   staticAssistantModel,
 } from "@/server/lib/chatAgent";
 import { SamSessionRepository } from "@/server/features/sam/SamSessionRepository";
@@ -46,6 +47,12 @@ import { getPublicOrigin } from "@/server/mcp/public-origin";
 import { MCP_SCOPE } from "@/lib/oauth-resource";
 import { AuthRepository } from "@/server/auth/repositories/AuthRepository";
 import type { ToolAuthContext } from "@/server/mcp/context";
+/* eslint-disable max-lines */
+import {
+  runBudgetedCompaction,
+  SAM_COMPACTION_MAX_OUTPUT_TOKENS,
+  SamStepBudget,
+} from "@/server/features/sam/samProviderBudget";
 
 // SAM's read-only view of the project's shared memory. The block has no `set`
 // provider, so Think exposes no set_context tool for it; writes go through the
@@ -136,9 +143,10 @@ export class SamChatAgent extends Think {
   // registry row is gone, which beforeTurn turns into a polite refusal.
   private samContext: SamContext | null = null;
 
-  // Per-turn billing state: beforeTurn arms it (non-null = hosted mode, meter
-  // this turn), onStepFinish accumulates OpenRouter cost and meters it in
-  // chunks as the turn runs, onChatResponse/onChatError flush the remainder.
+  // Hosted-credit billing state: beforeTurn arms it (non-null = hosted mode),
+  // and onStepFinish meters actual OpenRouter cost in chunks. The central SEO
+  // ledger is stricter and separate: each model generation has its own atomic
+  // reservation, settled before Think may advance to the next step.
   // Chunked per step rather than once per turn so a turn the Durable Object
   // memory limit kills mid-way still bills what it spent — the Sep 2026
   // recovery loop burned ~$160/day of OpenRouter spend that never reached
@@ -147,6 +155,7 @@ export class SamChatAgent extends Think {
   private turnUnbilledUsd = 0;
   private turnMonthlyRemaining: number | null = null;
   private billing: Promise<void> = Promise.resolve();
+  private stepBudget: SamStepBudget | null = null;
 
   // Turn telemetry: armed in beforeTurn, fed by the step and tool hooks,
   // reported once as `sam:turn` when the turn ends by any route (response,
@@ -232,14 +241,24 @@ export class SamChatAgent extends Think {
       .compactAfter(SAM_COMPACT_AFTER_TOKENS);
   }
 
-  // Compaction summaries run outside the step loop (so outside onStepFinish),
-  // on the same model at low reasoning; their cost joins the turn's total.
+  // Compaction runs outside the step loop, so it owns a separate reservation.
+  // Input is byte-bounded in runBudgetedCompaction and output is explicitly
+  // capped here; exactly one generation may consume the reservation.
   private async summarizeForCompaction(prompt: string): Promise<string> {
-    const result = await generateText({
-      model: this.buildModel("low"),
+    const ctx = await withPgClient(() => this.loadSamContext());
+    if (!ctx) throw new Error("SAM session no longer exists");
+    const { result, costUsd } = await runBudgetedCompaction({
+      projectId: ctx.project.id,
       prompt,
+      execute: () =>
+        generateText({
+          model: this.buildModel("low"),
+          prompt,
+          maxOutputTokens: SAM_COMPACTION_MAX_OUTPUT_TOKENS,
+        }),
+      costUsd: (output) => requireOpenRouterCostUsd(output.providerMetadata),
     });
-    this.recordSpend(openRouterCostUsd(result.providerMetadata));
+    this.recordSpend(costUsd);
     this.telemetry.compaction();
     return result.text;
   }
@@ -314,6 +333,7 @@ export class SamChatAgent extends Think {
     // summary can land after the previous flush, and it is the same org's
     // spend either way.
     this.turnMonthlyRemaining = null;
+    this.stepBudget = null;
     const turn = this.telemetry.beginTurn(turnCtx.continuation);
     return withPgClient(async (): Promise<TurnConfig> => {
       const ctx = await this.loadSamContext();
@@ -366,6 +386,8 @@ export class SamChatAgent extends Think {
           "You no longer have access to this organization, so I can't continue this chat.",
         );
       }
+
+      this.stepBudget = new SamStepBudget(ctx.project.id);
       const authContext: ToolAuthContext = {
         userId: ctx.row.userId,
         userEmail: ctx.userEmail,
@@ -395,10 +417,25 @@ export class SamChatAgent extends Think {
     });
   }
 
-  onStepFinish(ctx: StepContext): void {
-    const costUsd = openRouterCostUsd(ctx.providerMetadata);
+  async beforeStep(ctx: PrepareStepContext): Promise<void> {
+    // Free static refusal turns never arm a provider budget.
+    if (!this.stepBudget) return;
+    await this.stepBudget.reserveBeforeStep(ctx.messages);
+  }
+
+  async onStepFinish(ctx: StepContext): Promise<void> {
+    if (!this.stepBudget) {
+      // A locally generated refusal has no OpenRouter usage or paid dispatch.
+      this.recordSpend(0);
+      this.telemetry.step(ctx, 0);
+      return;
+    }
+    const costUsd = requireOpenRouterCostUsd(ctx.providerMetadata);
     this.recordSpend(costUsd);
     this.telemetry.step(ctx, costUsd);
+    if (this.stepBudget?.hasActiveReservation) {
+      await this.stepBudget.settleCompletedStep(costUsd);
+    }
   }
 
   // Add spend to the turn's unbilled total and meter it once a chunk has
@@ -491,10 +528,24 @@ export class SamChatAgent extends Think {
 
   // The return value becomes the stored chat-terminal body that reconnecting
   // clients replay — returning nothing would make it the string "undefined".
-  onChatError(error: unknown, ctx?: ChatErrorContext): unknown {
+  async onChatError(error: unknown, ctx?: ChatErrorContext): Promise<unknown> {
     console.error("[sam] chat turn error", ctx?.stage, error);
     // A stopped or failed turn still consumed what it consumed.
     this.flushSpend();
+    if (this.stepBudget?.hasActiveReservation) {
+      await this.stepBudget
+        .markActiveUncertain(
+          error instanceof Error ? error.name : "model failure",
+        )
+        .catch((settlementError: unknown) => {
+          console.error("[sam] uncertain step settlement failed", {
+            error:
+              settlementError instanceof Error
+                ? settlementError.message
+                : String(settlementError),
+          });
+        });
+    }
     this.telemetry.error(error, ctx, this.messages, this.billing);
     return error;
   }
