@@ -9,17 +9,14 @@ import type { RankTrackingConfig } from "@/types/schemas/rank-tracking";
 // Cost constants
 // ---------------------------------------------------------------------------
 
-/** DataForSEO Live API: cost of first page (10 results) */
-const LIVE_BASE_PAGE_COST_USD = 0.002;
+/** DataForSEO Live API: cost per page of ten results. */
+const LIVE_PAGE_COST_USD = 0.002;
 
-/** DataForSEO Live API: cost of each additional page (75% of base) */
-const LIVE_EXTRA_PAGE_COST_USD = 0.0015;
+/** DataForSEO task queue (standard priority): cost per page of ten results. */
+const QUEUED_PAGE_COST_USD = 0.0006;
 
-/** DataForSEO task queue (standard priority): cost of first page (10 results) */
-const QUEUED_BASE_PAGE_COST_USD = 0.0006;
-
-/** DataForSEO task queue (standard priority): cost of each additional page (75% of base) */
-const QUEUED_EXTRA_PAGE_COST_USD = 0.00045;
+const MIN_SERP_DEPTH = 10;
+const MAX_SERP_DEPTH = 100;
 
 /**
  * How a rank check reaches DataForSEO: "live" is the instant endpoint used for
@@ -58,14 +55,18 @@ export const rankCheckCostApprovalError = (
 
 /** DataForSEO cost for a single SERP request at the given depth. */
 function costPerSerpAtDepth(depth: number, method: RankCheckMethod): number {
-  const pages = depth / 10;
-  return method === "queued"
-    ? QUEUED_BASE_PAGE_COST_USD + (pages - 1) * QUEUED_EXTRA_PAGE_COST_USD
-    : LIVE_BASE_PAGE_COST_USD + (pages - 1) * LIVE_EXTRA_PAGE_COST_USD;
+  const pages = depthToPages(depth);
+  return (
+    pages * (method === "queued" ? QUEUED_PAGE_COST_USD : LIVE_PAGE_COST_USD)
+  );
 }
 
 export function depthToPages(depth: number): number {
-  return depth / 10;
+  const clampedDepth = Math.min(
+    MAX_SERP_DEPTH,
+    Math.max(MIN_SERP_DEPTH, depth),
+  );
+  return Math.ceil(clampedDepth / 10);
 }
 
 export function pagesToDepth(pages: number): number {

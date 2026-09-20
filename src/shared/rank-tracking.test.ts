@@ -20,8 +20,8 @@ describe("rank tracking cost estimates", () => {
       keywordCount: 1000,
       devices: "both" as const,
       depth: 40,
-      costUsd: 16.64,
-      costCredits: 18_000,
+      costUsd: 20.48,
+      costCredits: 22_000,
     },
     {
       method: "queued" as const,
@@ -36,8 +36,8 @@ describe("rank tracking cost estimates", () => {
       keywordCount: 1000,
       devices: "both" as const,
       depth: 40,
-      costUsd: 4.992,
-      costCredits: 5_000,
+      costUsd: 6.144,
+      costCredits: 6_160,
     },
   ])(
     "matches per-call billing for $method checks",
@@ -47,6 +47,23 @@ describe("rank tracking cost estimates", () => {
       ).toEqual({ costUsd, costCredits });
     },
   );
+});
+
+describe("rank tracking SERP pages", () => {
+  it.each([
+    { depth: 1, pages: 1 },
+    { depth: 10, pages: 1 },
+    { depth: 11, pages: 2 },
+    { depth: 100, pages: 10 },
+    { depth: 101, pages: 10 },
+  ])("clamps depth $depth to $pages billable pages", ({ depth, pages }) => {
+    expect(
+      estimateRankCheckCredits(1, "desktop", depth, "queued").costUsd,
+    ).toBeCloseTo(pages * 0.0006 * 1.28);
+    expect(
+      estimateRankCheckCredits(1, "desktop", depth, "live").costUsd,
+    ).toBeCloseTo(pages * 0.002 * 1.28);
+  });
 });
 
 describe("rank tracking schedules", () => {

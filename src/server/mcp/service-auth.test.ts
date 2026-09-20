@@ -20,6 +20,11 @@ const mocks = vi.hoisted(() => ({
         ctx: ExecutionContext,
       ) => Promise<Response>
     >(),
+  verifyCloudflareAccessPayload: vi.fn(),
+}));
+
+vi.mock("@/middleware/ensure-user/cloudflareAccess", () => ({
+  verifyCloudflareAccessPayload: mocks.verifyCloudflareAccessPayload,
 }));
 
 vi.mock("@/middleware/ensure-user/delegated", () => ({
@@ -39,10 +44,12 @@ const ctx: ExecutionContext = {
 };
 
 const env = {
+  AUTH_MODE: "cloudflare_access",
   OPENSEO_SERVICE_TOKEN: "service-secret",
   OPENSEO_SERVICE_EMAIL: "automation@example.com",
   OPENSEO_SERVICE_PROJECT_IDS: "project-1,project-2",
   OPENSEO_SERVICE_TOOLS: "whoami,research_keywords",
+  SERVICE_POLICY_AUD: "service-audience",
 };
 
 describe("MCP service authentication", () => {
@@ -55,6 +62,9 @@ describe("MCP service authentication", () => {
     mocks.handlePinnedOpenSeoMcpRequest.mockResolvedValue(
       Response.json({ ok: true }),
     );
+    mocks.verifyCloudflareAccessPayload.mockResolvedValue({
+      common_name: "service.access",
+    });
   });
 
   it("pins the service identity to configured projects and tools", async () => {
@@ -63,7 +73,7 @@ describe("MCP service authentication", () => {
         method: "POST",
         headers: { Authorization: "Bearer service-secret" },
       }),
-      env,
+      { ...env, AUTH_MODE: "local_noauth", SERVICE_POLICY_AUD: undefined },
       ctx,
     );
 
@@ -75,12 +85,80 @@ describe("MCP service authentication", () => {
     });
   });
 
+  it("accepts the dedicated token header when an edge proxy owns Authorization", async () => {
+    const response = await handleMcpServiceRequest(
+      new Request("https://seo.example/mcp", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer edge-owned-token",
+          "X-OpenSEO-Service-Token": "service-secret",
+        },
+      }),
+      env,
+      ctx,
+    );
+
+    expect(response?.status).toBe(200);
+    expect(mocks.handlePinnedOpenSeoMcpRequest).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a valid Access identity paired with a bad application token", async () => {
+    const response = await handleMcpServiceRequest(
+      new Request("https://seo.example/mcp", {
+        headers: { "X-OpenSEO-Service-Token": "wrong-secret" },
+      }),
+      env,
+      ctx,
+    );
+
+    expect(response?.status).toBe(401);
+    expect(mocks.verifyCloudflareAccessPayload).not.toHaveBeenCalled();
+    expect(mocks.handlePinnedOpenSeoMcpRequest).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the application secret or service audience is absent", async () => {
+    const request = new Request("https://seo.example/mcp", {
+      headers: { "X-OpenSEO-Service-Token": "service-secret" },
+    });
+
+    await expect(
+      handleMcpServiceRequest(
+        request,
+        { ...env, OPENSEO_SERVICE_TOKEN: undefined },
+        ctx,
+      ),
+    ).resolves.toMatchObject({ status: 503 });
+    await expect(
+      handleMcpServiceRequest(
+        request,
+        { ...env, SERVICE_POLICY_AUD: undefined },
+        ctx,
+      ),
+    ).resolves.toMatchObject({ status: 503 });
+  });
+
+  it("rejects an invalid Cloudflare service JWT", async () => {
+    mocks.verifyCloudflareAccessPayload.mockRejectedValueOnce(
+      new Error("bad service jwt"),
+    );
+    const response = await handleMcpServiceRequest(
+      new Request("https://seo.example/mcp", {
+        headers: { "X-OpenSEO-Service-Token": "service-secret" },
+      }),
+      env,
+      ctx,
+    );
+
+    expect(response?.status).toBe(403);
+    expect(mocks.handlePinnedOpenSeoMcpRequest).not.toHaveBeenCalled();
+  });
+
   it("does not consume another credential's bearer token", async () => {
     const response = await handleMcpServiceRequest(
       new Request("https://seo.example/mcp", {
         headers: { Authorization: "Bearer another-token" },
       }),
-      env,
+      { ...env, AUTH_MODE: "local_noauth", SERVICE_POLICY_AUD: undefined },
       ctx,
     );
 
@@ -93,7 +171,12 @@ describe("MCP service authentication", () => {
       new Request("https://seo.example/mcp", {
         headers: { Authorization: "Bearer service-secret" },
       }),
-      { ...env, OPENSEO_SERVICE_PROJECT_IDS: "" },
+      {
+        ...env,
+        AUTH_MODE: "local_noauth",
+        SERVICE_POLICY_AUD: undefined,
+        OPENSEO_SERVICE_PROJECT_IDS: "",
+      },
       ctx,
     );
 

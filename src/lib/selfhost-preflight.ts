@@ -124,12 +124,15 @@ function checkDataForSeo(env: EnvRecord, items: PreflightItem[]): void {
   const key = get(env, "DATAFORSEO_API_KEY");
 
   if (!key) {
+    const bootstrapDisabledPaid =
+      get(env, "OPENSEO_BOOTSTRAP_DISABLED_PAID") === "1";
     items.push({
       key: "dataforseo",
       name: "DATAFORSEO_API_KEY",
       level: "warn",
-      message:
-        "Not set — all SEO data features will be unavailable until it is. It is the base64 of your DataForSEO login:password (NOT the dashboard API key). See docs/DATAFORSEO_API_KEY.md.",
+      message: bootstrapDisabledPaid
+        ? "Disabled for private initialization — every paid SEO provider operation is unavailable until a real DataForSEO credential and reviewed tariff registry are deployed."
+        : "Not set — all SEO data features will be unavailable until it is. It is the base64 of your DataForSEO login:password (NOT the dashboard API key). See docs/DATAFORSEO_API_KEY.md.",
     });
     return;
   }

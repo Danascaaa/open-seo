@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as CfWorkers from "@distilled.cloud/cloudflare/workers";
@@ -180,9 +181,23 @@ const resolveSelfHostAccess = (
   Effect.gen(function* () {
     let teamDomain = yield* optionalVar("TEAM_DOMAIN");
     let policyAud: Alchemy.Input<string> = yield* optionalVar("POLICY_AUD");
-    const serviceTokenId = yield* optionalVar("CF_ACCESS_SERVICE_TOKEN_ID");
+    let serviceTokenId: Alchemy.Input<string> = yield* optionalVar(
+      "CF_ACCESS_SERVICE_TOKEN_ID",
+    );
+    const provisionServiceToken =
+      (yield* optionalVar("CF_ACCESS_PROVISION_SERVICE_TOKEN")) === "1";
+    if (!serviceTokenId && provisionServiceToken) {
+      const serviceToken = yield* Cloudflare.Access.ServiceToken(
+        "SelfHostMcpServiceToken",
+        {
+          name: `open-seo-${stage}-mcp`,
+          duration: "8760h",
+        },
+      );
+      serviceTokenId = serviceToken.serviceTokenId;
+    }
     if (!provision || (teamDomain && policyAud && !serviceTokenId)) {
-      return { teamDomain, policyAud };
+      return { teamDomain, policyAud, servicePolicyAud: "" };
     }
     const { accountId } = yield* yield* Cloudflare.CloudflareEnvironment;
 
@@ -242,6 +257,21 @@ const resolveSelfHostAccess = (
       }
     }
 
+    const serviceGate = serviceTokenId
+      ? yield* serviceAccessGate({
+          policyId: "SelfHostAllowSeoService",
+          applicationId: "SelfHostSeoServiceAccess",
+          policyName: `open-seo ${stage} SEO service`,
+          applicationName: `open-seo ${stage} MCP service`,
+          // Partial path wildcard includes the exact /mcp endpoint and any
+          // protocol-specific suffix without granting the service token access
+          // to the rest of the UI. A bare /mcp destination was shadowed by the
+          // hostname-wide human application on Workers.dev.
+          domain: `${workerName(stage)}.${subdomain}/mcp*`,
+          serviceTokenId,
+        })
+      : undefined;
+
     if (!policyAud) {
       const allowedEmails = yield* requireAllowedEmails(
         "Set ACCESS_ALLOWED_EMAILS to the comma-separated emails allowed through Cloudflare Access — or set TEAM_DOMAIN and POLICY_AUD to manage the Access application yourself.",
@@ -253,22 +283,20 @@ const resolveSelfHostAccess = (
         applicationName: `open-seo ${stage}`,
         domain: `${workerName(stage)}.${subdomain}`,
         emails: allowedEmails,
+        // Workers.dev may evaluate the hostname-wide application before its
+        // path-specific sibling. Attach the same Service Auth policy here as
+        // an edge fallback; application code still accepts the service bearer
+        // on /mcp only and rejects service identities on UI routes.
+        additionalPolicyIds: serviceGate ? [serviceGate.policyId] : undefined,
       });
       policyAud = application.aud;
     }
 
-    if (serviceTokenId) {
-      yield* serviceAccessGate({
-        policyId: "SelfHostAllowSeoService",
-        applicationId: "SelfHostSeoServiceAccess",
-        policyName: `open-seo ${stage} SEO service`,
-        applicationName: `open-seo ${stage} MCP service`,
-        domain: `${workerName(stage)}.${subdomain}/mcp`,
-        serviceTokenId,
-      });
-    }
-
-    return { teamDomain, policyAud };
+    return {
+      teamDomain,
+      policyAud,
+      servicePolicyAud: serviceGate?.application.aud ?? "",
+    };
   });
 
 // Secrets/vars resolve from the env file passed to `alchemy deploy`
@@ -278,7 +306,10 @@ const resolveSelfHostAccess = (
 const dataEnv = {
   // AUTH_MODE, DATABASE_PROVIDER, BETTER_AUTH_URL, TEAM_DOMAIN, and
   // POLICY_AUD are stage-dependent and set in the stack body below.
-  DATAFORSEO_API_KEY: Config.redacted("DATAFORSEO_API_KEY"),
+  DATAFORSEO_API_KEY: optionalSecret("DATAFORSEO_API_KEY"),
+  OPENSEO_BOOTSTRAP_DISABLED_PAID: optionalVar(
+    "OPENSEO_BOOTSTRAP_DISABLED_PAID",
+  ),
   BYPASS_EMAIL_VERIFICATION: optionalVar("BYPASS_EMAIL_VERIFICATION"),
   BETTER_AUTH_SECRET: optionalSecret("BETTER_AUTH_SECRET"),
   GOOGLE_CLIENT_ID: optionalVar("GOOGLE_CLIENT_ID"),
@@ -287,8 +318,13 @@ const dataEnv = {
   OPENROUTER_MODEL: optionalVar("OPENROUTER_MODEL"),
   SEO_LEDGER_BASE_URL: optionalVar("SEO_LEDGER_BASE_URL"),
   SEO_LEDGER_TOKEN: optionalSecret("SEO_LEDGER_TOKEN"),
+  // Versioned bindings force Cloudflare to receive the current secrets;
+  // secret_text values are write-only and cannot be diffed after rotation.
+  SEO_LEDGER_TOKEN_V2: optionalSecret("SEO_INTERNAL_TOKEN"),
   SEO_PAID_OPERATION_LIMITS_JSON: optionalVar("SEO_PAID_OPERATION_LIMITS_JSON"),
   OPENSEO_SERVICE_TOKEN: optionalSecret("OPENSEO_SERVICE_TOKEN"),
+  OPENSEO_SERVICE_TOKEN_V2: optionalSecret("OPENSEO_SERVICE_TOKEN"),
+  OPENSEO_SERVICE_TOKEN_V3: optionalSecret("OPENSEO_SERVICE_TOKEN_V3"),
   OPENSEO_SERVICE_EMAIL: optionalVar("OPENSEO_SERVICE_EMAIL"),
   OPENSEO_SERVICE_PROJECT_IDS: optionalVar("OPENSEO_SERVICE_PROJECT_IDS"),
   OPENSEO_SERVICE_TOOLS: optionalVar("OPENSEO_SERVICE_TOOLS"),
@@ -421,6 +457,7 @@ export default Alchemy.Stack(
         DATAFORSEO_API_KEY: dataEnv.DATAFORSEO_API_KEY,
         SEO_LEDGER_BASE_URL: dataEnv.SEO_LEDGER_BASE_URL,
         SEO_LEDGER_TOKEN: dataEnv.SEO_LEDGER_TOKEN,
+        SEO_LEDGER_TOKEN_V2: dataEnv.SEO_LEDGER_TOKEN_V2,
         SEO_PAID_OPERATION_LIMITS_JSON: dataEnv.SEO_PAID_OPERATION_LIMITS_JSON,
         AUTUMN_SECRET_KEY: dataEnv.AUTUMN_SECRET_KEY,
         POSTHOG_PUBLIC_KEY: dataEnv.POSTHOG_PUBLIC_KEY,
@@ -486,6 +523,7 @@ export default Alchemy.Stack(
         BETTER_AUTH_URL: authUrl,
         TEAM_DOMAIN: access.teamDomain,
         POLICY_AUD: access.policyAud,
+        SERVICE_POLICY_AUD: access.servicePolicyAud,
 
         // Prod-only: pooled Postgres via the existing Hyperdrive config.
         ...(prodHyperdrive ? { HYPERDRIVE: prodHyperdrive } : {}),

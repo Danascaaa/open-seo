@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { dataforseoPost } from "@/server/lib/dataforseo/core";
 import {
+  assertKeywordOverviewKeywords,
+  assertPositiveIntegerAtMost,
+  assertRelatedKeywordsDepth,
+} from "@/server/lib/dataforseo/labs-validation";
+import {
   assertOk,
   buildTaskBilling,
   parseTaskItems,
@@ -152,6 +157,8 @@ export async function fetchRelatedKeywords(input: {
   depth?: number;
   includeClickstreamData?: boolean;
 }): Promise<DataforseoApiResponse<RelatedKeywordItem[]>> {
+  assertPositiveIntegerAtMost(input.limit, 500, "limit");
+  assertRelatedKeywordsDepth(input.depth ?? 3);
   const response = await dataforseoPost<
     DataforseoItemsTask<RelatedKeywordItem>
   >("/v3/dataforseo_labs/google/related_keywords/live", [
@@ -181,6 +188,7 @@ export async function fetchKeywordSuggestions(input: {
   limit: number;
   includeClickstreamData?: boolean;
 }): Promise<DataforseoApiResponse<LabsKeywordDataItem[]>> {
+  assertPositiveIntegerAtMost(input.limit, 500, "limit");
   const response = await dataforseoPost<
     DataforseoItemsTask<LabsKeywordDataItem>
   >("/v3/dataforseo_labs/google/keyword_suggestions/live", [
@@ -210,6 +218,7 @@ export async function fetchKeywordIdeas(input: {
   limit: number;
   includeClickstreamData?: boolean;
 }): Promise<DataforseoApiResponse<LabsKeywordDataItem[]>> {
+  assertPositiveIntegerAtMost(input.limit, 500, "limit");
   const response = await dataforseoPost<
     DataforseoItemsTask<LabsKeywordDataItem>
   >("/v3/dataforseo_labs/google/keyword_ideas/live", [
@@ -269,6 +278,7 @@ export async function fetchRankedKeywords(input: {
   filters?: unknown[];
   itemTypes?: DataforseoLabsItemType[];
 }): Promise<DataforseoApiResponse<RankedKeywordsPage>> {
+  assertPositiveIntegerAtMost(input.limit, 200, "limit");
   // Note: ranked_keywords has no include_subdomains parameter — a domain
   // target always covers the hostname plus its subdomains. Narrower scopes
   // are expressed through `filters` (see researchScopeFilters.ts).
@@ -345,6 +355,7 @@ export async function fetchKeywordOverview(input: {
   languageCode: string;
   includeClickstreamData?: boolean;
 }): Promise<DataforseoApiResponse<KeywordOverviewItem[]>> {
+  assertKeywordOverviewKeywords(input.keywords);
   const response = await dataforseoPost<
     DataforseoItemsTask<KeywordOverviewItem>
   >("/v3/dataforseo_labs/google/keyword_overview/live", [

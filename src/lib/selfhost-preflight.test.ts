@@ -60,6 +60,18 @@ describe("runSelfhostPreflight", () => {
     expect(itemFor(result, "DATAFORSEO_API_KEY")?.message).toContain("base64");
   });
 
+  it("reports DataForSEO as explicitly disabled during private initialization", () => {
+    const result = runSelfhostPreflight({
+      AUTH_MODE: "local_noauth",
+      OPENSEO_BOOTSTRAP_DISABLED_PAID: "1",
+    });
+
+    expect(itemFor(result, "DATAFORSEO_API_KEY")?.level).toBe("warn");
+    expect(itemFor(result, "DATAFORSEO_API_KEY")?.message).toContain(
+      "Disabled for private initialization",
+    );
+  });
+
   it("warns that GSC stays disabled on a short BETTER_AUTH_SECRET", () => {
     const result = runSelfhostPreflight({
       AUTH_MODE: "local_noauth",

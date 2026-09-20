@@ -1,6 +1,8 @@
 import { MCP_SCOPE } from "@/lib/oauth-resource";
+import { getAuthMode } from "@/lib/auth-mode";
 import { resolveSharedWorkspaceContext } from "@/middleware/ensure-user/delegated";
 import { getEnvValueSync } from "@/server/lib/runtime-env";
+import { verifyCloudflareAccessPayload } from "@/middleware/ensure-user/cloudflareAccess";
 import { createWorkersOAuthMcpProps, MCP_ROUTE } from "@/server/mcp/context";
 import { getPublicOrigin } from "@/server/mcp/public-origin";
 import { handlePinnedOpenSeoMcpRequest } from "@/server/mcp/transport";
@@ -39,13 +41,58 @@ export async function handleMcpServiceRequest(
   ctx: ExecutionContext,
 ): Promise<Response | null> {
   if (new URL(request.url).pathname !== MCP_ROUTE) return null;
-  const expected = getEnvValueSync(env, "OPENSEO_SERVICE_TOKEN");
-  if (!expected) return null;
+  const expected =
+    getEnvValueSync(env, "OPENSEO_SERVICE_TOKEN_V3") ??
+    getEnvValueSync(env, "OPENSEO_SERVICE_TOKEN_V2") ??
+    getEnvValueSync(env, "OPENSEO_SERVICE_TOKEN");
+  const dedicatedToken = request.headers.get("x-openseo-service-token");
+  const servicePolicyAud = getEnvValueSync(env, "SERVICE_POLICY_AUD");
+  const authMode = getAuthMode(getEnvValueSync(env, "AUTH_MODE"));
 
-  const candidate = request.headers
-    .get("Authorization")
-    ?.replace(/^Bearer /i, "");
-  if (!candidate || !(await tokensEqual(candidate, expected))) return null;
+  if (authMode === "cloudflare_access") {
+    // No service-intent header: leave the request to the normal human MCP
+    // authentication path. Bearer alone can never select service auth here.
+    if (!dedicatedToken) return null;
+    if (!expected || !servicePolicyAud) {
+      return new Response("Service authentication is not configured", {
+        status: 503,
+      });
+    }
+    if (!(await tokensEqual(dedicatedToken, expected))) {
+      return new Response("Invalid service credential", { status: 401 });
+    }
+    try {
+      const payload = await verifyCloudflareAccessPayload(
+        request.headers,
+        servicePolicyAud,
+      );
+      if (typeof payload.common_name !== "string" || !payload.common_name) {
+        return new Response("Service identity required", { status: 403 });
+      }
+    } catch {
+      return new Response("Service authentication failed", { status: 403 });
+    }
+  } else {
+    // Outside Access, preserve the explicit Bearer compatibility path. An
+    // unrelated OAuth/API-key bearer falls through to its normal handler.
+    const bearer = request.headers
+      .get("Authorization")
+      ?.replace(/^Bearer /i, "");
+    const candidate = dedicatedToken ?? bearer;
+    if (!candidate) return null;
+    if (!expected) {
+      return dedicatedToken
+        ? new Response("Service authentication is not configured", {
+            status: 503,
+          })
+        : null;
+    }
+    if (!(await tokensEqual(candidate, expected))) {
+      return dedicatedToken
+        ? new Response("Invalid service credential", { status: 401 })
+        : null;
+    }
+  }
 
   const email = getEnvValueSync(env, "OPENSEO_SERVICE_EMAIL");
   const allowedProjectIds = csv(

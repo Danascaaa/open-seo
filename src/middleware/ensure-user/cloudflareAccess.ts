@@ -39,14 +39,11 @@ function getValidatedTeamDomain(teamDomain: string) {
 export async function resolveCloudflareAccessContext(
   headers: Headers,
 ): Promise<EnsuredUserContext> {
-  const teamDomain = env.TEAM_DOMAIN
-    ? getValidatedTeamDomain(env.TEAM_DOMAIN)
-    : null;
   const policyAud = env.POLICY_AUD?.trim() || null;
 
-  if (!teamDomain || !policyAud) {
+  if (!env.TEAM_DOMAIN || !policyAud) {
     const missing = [
-      teamDomain ? null : "TEAM_DOMAIN",
+      env.TEAM_DOMAIN ? null : "TEAM_DOMAIN",
       policyAud ? null : "POLICY_AUD",
     ]
       .filter(Boolean)
@@ -54,6 +51,32 @@ export async function resolveCloudflareAccessContext(
     throw new AppError(
       "AUTH_CONFIG_MISSING",
       `Missing Cloudflare Access configuration: set ${missing} on the deployment. See docs/SELF_HOSTING_CLOUDFLARE.md.`,
+    );
+  }
+
+  const payload = await verifyCloudflareAccessPayload(headers, policyAud);
+
+  const userId = typeof payload.sub === "string" ? payload.sub : null;
+  const userEmail = typeof payload.email === "string" ? payload.email : null;
+
+  if (!userId || !userEmail) {
+    throw new AppError("UNAUTHENTICATED");
+  }
+
+  return resolveSharedWorkspaceContext(userId, userEmail);
+}
+
+export async function verifyCloudflareAccessPayload(
+  headers: Headers,
+  audience: string,
+): Promise<JWTPayload> {
+  const teamDomain = env.TEAM_DOMAIN
+    ? getValidatedTeamDomain(env.TEAM_DOMAIN)
+    : null;
+  if (!teamDomain) {
+    throw new AppError(
+      "AUTH_CONFIG_MISSING",
+      "Missing Cloudflare Access TEAM_DOMAIN configuration.",
     );
   }
 
@@ -77,7 +100,7 @@ export async function resolveCloudflareAccessContext(
     const jwks = getJwks(teamDomain);
     ({ payload } = await jwtVerify(token, jwks, {
       issuer: teamDomain,
-      audience: policyAud,
+      audience,
     }));
   } catch (error) {
     // The classified AppError carries operator guidance; log the raw jose
@@ -87,12 +110,5 @@ export async function resolveCloudflareAccessContext(
     throw classifyAccessVerificationError(error);
   }
 
-  const userId = typeof payload.sub === "string" ? payload.sub : null;
-  const userEmail = typeof payload.email === "string" ? payload.email : null;
-
-  if (!userId || !userEmail) {
-    throw new AppError("UNAUTHENTICATED");
-  }
-
-  return resolveSharedWorkspaceContext(userId, userEmail);
+  return payload;
 }
