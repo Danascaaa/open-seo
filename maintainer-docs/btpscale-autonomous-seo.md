@@ -70,12 +70,14 @@ Plain Bearer authentication remains a compatibility fallback outside Access.
 
 On the Cloudflare path, OpenSEO verifies the signed Access JWT against the
 service application's own `SERVICE_POLICY_AUD` and requires its service-token
-`common_name` claim before applying the project/tool allowlists. The dedicated
-header selects this route but does not replace the signed Access proof.
+`common_name` claim before applying the project/tool allowlists. It also
+compares `X-OpenSEO-Service-Token` in constant time against the versioned
+application secret. Both proofs are mandatory. Bearer fallback is accepted
+only when `AUTH_MODE` is not `cloudflare_access`.
 
 Cloudflare `secret_text` values are write-only, so Alchemy cannot reliably
 diff a rotated value under the same binding name. Runtime reads the versioned
-`OPENSEO_SERVICE_TOKEN_V2` and `SEO_LEDGER_TOKEN_V2` bindings first; the v1
+`OPENSEO_SERVICE_TOKEN_V3` and `SEO_LEDGER_TOKEN_V2` bindings first; older
 names remain rollback fallbacks only.
 
 ## Budget behavior
@@ -164,10 +166,10 @@ provider responses.
 
 Projects use France (`2250`) and French (`fr`):
 
-| Project | ID | Domain |
-| --- | --- | --- |
-| BTPScale | `29d32756-aacc-4659-9aa9-ace2098b6a3f` | `btpscale.fr` |
-| Luvabat | `850a3ac9-8a43-4e98-a706-05d5222e8469` | `luvabat.fr` |
+| Project                   | ID                                     | Domain                 |
+| ------------------------- | -------------------------------------- | ---------------------- |
+| BTPScale                  | `29d32756-aacc-4659-9aa9-ace2098b6a3f` | `btpscale.fr`          |
+| Luvabat                   | `850a3ac9-8a43-4e98-a706-05d5222e8469` | `luvabat.fr`           |
 | Carnet Rénovation Essonne | `8a3efc32-f947-44c1-b5bd-93afbf122b0f` | `carnet-renovation.fr` |
 
 Rollback preserves data: redeploy the previous Git commit with the same

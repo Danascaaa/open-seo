@@ -73,6 +73,7 @@ declare namespace Cloudflare {
     // projects and tools are comma-separated server-side allowlists.
     OPENSEO_SERVICE_TOKEN?: string;
     OPENSEO_SERVICE_TOKEN_V2?: string;
+    OPENSEO_SERVICE_TOKEN_V3?: string;
     OPENSEO_SERVICE_EMAIL?: string;
     OPENSEO_SERVICE_PROJECT_IDS?: string;
     OPENSEO_SERVICE_TOOLS?: string;
