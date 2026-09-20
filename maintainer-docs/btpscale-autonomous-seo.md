@@ -212,6 +212,31 @@ Projects use France (`2250`) and French (`fr`):
 | Luvabat                   | `850a3ac9-8a43-4e98-a706-05d5222e8469` | `luvabat.fr`           |
 | Carnet Rénovation Essonne | `8a3efc32-f947-44c1-b5bd-93afbf122b0f` | `carnet-renovation.fr` |
 
+### BTPScale native weekly rank tracker — configured 2026-09-21
+
+- Tracker: `5c748b23-36ec-4934-98ef-cacf5ea55337` for `btpscale.fr`, France
+  `2250`, language `fr`, mobile, depth 40, interval `weekly`.
+- Tracked terms: `fiche établissement Google`,
+  `trouver des chantiers rénovation`, `publicité artisan bâtiment`, `btpscale`,
+  and `btp scale`. The first three are the BTPScale research seeds in the
+  control-plane registry; the final two are its versioned brand terms.
+- `estimate_rank_tracker_cost` ran before keyword insertion and returned a
+  nominal scheduled estimate of `$0.01536` / 16 usage credits per check and 64
+  credits per four-check month. These values are estimates, not observed
+  provider spend.
+- `create_rank_tracker` and `add_rank_tracking_keywords` made no provider call
+  and started no rank check. The final read reported five keyword rows, no run,
+  and `nextCheckAt: 2026-09-27T06:24:00.000Z`.
+- For setup only, machine access was narrowed to the BTPScale project and the
+  two mutation tools were added. Deployment was then restored to the three
+  project IDs and the normal eight-tool allowlist. Access, D1, KV, R2 and
+  Workflows were unchanged.
+
+There is no scheduled or server-side weekly backlinks export. The only export
+implementation is the local UI CSV builder in
+`src/client/features/backlinks/export.ts`; the paid backlink MCP readers are
+not part of the machine allowlist.
+
 Rollback preserves data: redeploy the previous Git commit with the same
 `selfhost` stage. Alchemy updates the Worker versions in place and keeps the
 D1, KV and R2 resources. Do not run `alchemy destroy`; that is the destructive
