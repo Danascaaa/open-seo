@@ -424,6 +424,12 @@ export class SamChatAgent extends Think {
   }
 
   async onStepFinish(ctx: StepContext): Promise<void> {
+    if (!this.stepBudget) {
+      // A locally generated refusal has no OpenRouter usage or paid dispatch.
+      this.recordSpend(0);
+      this.telemetry.step(ctx, 0);
+      return;
+    }
     const costUsd = requireOpenRouterCostUsd(ctx.providerMetadata);
     this.recordSpend(costUsd);
     this.telemetry.step(ctx, costUsd);
