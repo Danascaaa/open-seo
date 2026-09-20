@@ -84,6 +84,8 @@ describe("gscClient", () => {
     const [url, init] = mocks.fetch.mock.calls[0];
     expect(url).toBe("https://www.googleapis.com/webmasters/v3/sites");
     expect(init?.headers).toMatchObject({ Authorization: "Bearer tok_123" });
+    expect(init?.redirect).toBe("error");
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("targets the selected Better Auth grant by Google sub", async () => {
@@ -275,6 +277,8 @@ describe("gscClient", () => {
 
     const [tokenUrl, tokenInit] = mocks.fetch.mock.calls[0];
     expect(tokenUrl).toBe("https://oauth2.googleapis.com/token");
+    expect(tokenInit?.redirect).toBe("error");
+    expect(tokenInit?.signal).toBeInstanceOf(AbortSignal);
     const tokenBody = tokenInit?.body;
     if (!(tokenBody instanceof URLSearchParams)) {
       throw new Error("token body is not URLSearchParams");
@@ -291,5 +295,7 @@ describe("gscClient", () => {
     expect(sitesInit?.headers).toMatchObject({
       Authorization: "Bearer service-token",
     });
+    expect(sitesInit?.redirect).toBe("error");
+    expect(sitesInit?.signal).toBeInstanceOf(AbortSignal);
   });
 });

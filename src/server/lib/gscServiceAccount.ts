@@ -7,10 +7,7 @@ export const GSC_SERVICE_ACCOUNT_SCOPE =
 const TOKEN_SKEW_MS = 60_000;
 
 export class GscServiceAccountError extends Error {
-  constructor(
-    message: string,
-    public readonly cause?: unknown,
-  ) {
+  constructor(message: string) {
     super(message);
     this.name = "GscServiceAccountError";
   }
@@ -190,7 +187,6 @@ async function createAssertion(
     if (error instanceof GscServiceAccountError) throw error;
     throw new GscServiceAccountError(
       "GSC service-account private_key could not sign an assertion.",
-      error,
     );
   }
 }
@@ -209,16 +205,17 @@ export function createServiceAccountTokenProvider(
     try {
       response = await fetch(GOOGLE_TOKEN_URL, {
         method: "POST",
+        redirect: "error",
+        signal: AbortSignal.timeout(15_000),
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
           grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
           assertion,
         }),
       });
-    } catch (error) {
+    } catch {
       throw new GscServiceAccountError(
         "Google service-account token exchange is unavailable.",
-        error,
       );
     }
     if (!response.ok) {
@@ -230,10 +227,9 @@ export function createServiceAccountTokenProvider(
     let tokenPayload: unknown;
     try {
       tokenPayload = await response.json();
-    } catch (error) {
+    } catch {
       throw new GscServiceAccountError(
         "Google returned an invalid service-account token response.",
-        error,
       );
     }
     const parsed = z

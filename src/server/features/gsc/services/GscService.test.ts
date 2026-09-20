@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => {
     selectRows: [],
   };
   type GscClientOptions = { userId: string; gscAccountId?: string };
-  type GscSite = { siteUrl: string; permissionLevel: string };
+  type GscSite = { siteUrl: string; permissionLevel?: string };
   const listSites = vi.fn<(opts: GscClientOptions) => Promise<GscSite[]>>();
   const getUserInfoEmail =
     vi.fn<(opts: GscClientOptions) => Promise<string | null>>();
@@ -451,6 +451,35 @@ describe("GscService.getPerformance", () => {
     expect(mocks.serviceQuerySearchAnalytics).not.toHaveBeenCalled();
     expect(mocks.createGscClient).not.toHaveBeenCalled();
   });
+
+  it.each([
+    [
+      "unknown",
+      { siteUrl: "sc-domain:example.com", permissionLevel: "custom" },
+    ],
+    ["missing", { siteUrl: "sc-domain:example.com" }],
+  ])(
+    "refuses a %s service-account permission before a data query",
+    async (_label, site) => {
+      mocks.getGscServiceAccountProjectConfig.mockResolvedValue({
+        siteUrl: "sc-domain:example.com",
+        credentials: {
+          clientEmail: "service@example.com",
+          privateKey: "pem",
+        },
+      });
+      mocks.serviceListSites.mockResolvedValue([site]);
+
+      await expect(
+        GscService.getPerformance({
+          projectId: "p1",
+          startDate: "2026-01-01",
+          endDate: "2026-01-31",
+        }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(mocks.serviceQuerySearchAnalytics).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("GscService.disconnect", () => {

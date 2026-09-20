@@ -31,6 +31,11 @@ import type {
 } from "@/server/lib/gscClient";
 
 const SITE_UNVERIFIED_PERMISSION = "siteUnverifiedUser";
+const SERVICE_ACCOUNT_READ_PERMISSIONS = new Set([
+  "siteOwner",
+  "siteFullUser",
+  "siteRestrictedUser",
+]);
 
 type GscPerformanceResult = {
   siteUrl: string;
@@ -63,16 +68,10 @@ async function assertServiceAccountProperty(
 ): Promise<void> {
   const sites = await client.listSites();
   const match = sites.find((site) => site.siteUrl === siteUrl);
-  if (!match) {
+  if (!match || !SERVICE_ACCOUNT_READ_PERMISSIONS.has(match.permissionLevel)) {
     throw new AppError(
       "FORBIDDEN",
       "The server-managed Search Console property is not available to the configured service account.",
-    );
-  }
-  if (match.permissionLevel === SITE_UNVERIFIED_PERMISSION) {
-    throw new AppError(
-      "FORBIDDEN",
-      "The configured service account does not have verified access to this Search Console property.",
     );
   }
 }

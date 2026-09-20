@@ -97,6 +97,8 @@ function createGscApiClient(
     try {
       response = await fetch(url, {
         method: init?.method ?? "GET",
+        redirect: "error",
+        signal: AbortSignal.timeout(15_000),
         headers: {
           Authorization: `Bearer ${token}`,
           ...(hasBody ? { "Content-Type": "application/json" } : {}),
@@ -202,6 +204,8 @@ export function createGscClient(opts: {
     let response: Response;
     try {
       response = await fetch(GOOGLE_USERINFO_URL, {
+        redirect: "error",
+        signal: AbortSignal.timeout(15_000),
         headers: { Authorization: `Bearer ${token}` },
       });
     } catch (error) {
