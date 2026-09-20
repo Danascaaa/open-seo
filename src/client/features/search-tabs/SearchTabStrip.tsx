@@ -116,6 +116,7 @@ function SearchTabStatus({
     notifyOnChangeProps: ["dataUpdatedAt", "fetchStatus", "status"],
     staleTime: config.staleTime,
     gcTime: config.gcTime,
+    retry: false,
   });
 
   const isLoading = query.fetchStatus === "fetching";

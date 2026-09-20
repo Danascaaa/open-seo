@@ -170,7 +170,9 @@ describe("meterDataforseoCall with split balances", () => {
       operationId: "operation-1",
       status: "reserved",
       reservedCents: 500,
+      actualCents: null,
       remainingCents: 1000,
+      replayed: false,
     });
     commitSeoBudgetMock.mockResolvedValue(undefined);
     releaseSeoBudgetMock.mockResolvedValue(undefined);
@@ -188,6 +190,48 @@ describe("meterDataforseoCall with split balances", () => {
     expect(checkMock).not.toHaveBeenCalled();
     expect(trackMock).not.toHaveBeenCalled();
   });
+
+  it("dispatches once for a reserved reconciliation before provider access", async () => {
+    isHostedServerAuthModeMock.mockResolvedValue(false);
+    reserveSeoBudgetMock.mockResolvedValue({
+      reservationId: "reservation-reconciled",
+      operationId: "operation-reconciled",
+      status: "reserved",
+      reservedCents: 15,
+      actualCents: null,
+      remainingCents: 1485,
+      replayed: true,
+    });
+    mockDataforseoResult(0.05);
+
+    await createDataforseoClient(billingCustomer).backlinks.summary(
+      backlinksInput,
+    );
+
+    expect(fetchBacklinksSummary).toHaveBeenCalledOnce();
+    expect(commitSeoBudgetMock).toHaveBeenCalledOnce();
+  });
+
+  it.each(["settled", "uncertain", "released"] as const)(
+    "refuses a %s reservation before provider dispatch",
+    async (status) => {
+      reserveSeoBudgetMock.mockResolvedValue({
+        reservationId: `reservation-${status}`,
+        operationId: `operation-${status}`,
+        status,
+        reservedCents: 15,
+        actualCents: status === "settled" ? 12 : null,
+        replayed: true,
+      });
+
+      await expect(
+        createDataforseoClient(billingCustomer).backlinks.summary(
+          backlinksInput,
+        ),
+      ).rejects.toThrow("not dispatchable");
+      expect(fetchBacklinksSummary).not.toHaveBeenCalled();
+    },
+  );
 
   it("checks both monthly and topup balances in parallel", async () => {
     setupHostedMode();

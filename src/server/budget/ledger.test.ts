@@ -21,16 +21,22 @@ vi.mock("@/server/lib/runtime-env", () => ({
 
 afterEach(() => vi.unstubAllGlobals());
 
+const exactReservedApiResponse = {
+  reservationId: "31e3c898-2513-4503-a673-ee05a42da18d",
+  status: "reserved",
+  reservedCents: 15,
+  actualCents: null,
+  remainingCents: 1485,
+  replayed: false,
+  requestId: "11111111-1111-4111-8111-111111111111",
+} as const;
+
 describe("SEO budget ledger", () => {
-  it("reserves a conservative call ceiling before a paid call", async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
-      Response.json({
-        reservationId: "r-1",
-        status: "reserved",
-        reservedCents: 500,
-        remainingCents: 1000,
-      }),
-    );
+  it("accepts the exact SQL/API null cost before mock provider dispatch", async () => {
+    const providerDispatch = vi.fn().mockResolvedValue({ rows: [] });
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(Response.json(exactReservedApiResponse));
     vi.stubGlobal("fetch", fetchMock);
 
     const reservation = await reserveSeoBudget({
@@ -39,8 +45,15 @@ describe("SEO budget ledger", () => {
       provider: "dataforseo",
       category: "research",
     });
+    await providerDispatch(reservation);
 
-    expect(reservation.reservationId).toBe("r-1");
+    expect(reservation).toMatchObject({
+      reservationId: exactReservedApiResponse.reservationId,
+      status: "reserved",
+      actualCents: null,
+      replayed: false,
+    });
+    expect(providerDispatch).toHaveBeenCalledOnce();
     expect(fetchMock).toHaveBeenCalledOnce();
     const init = fetchMock.mock.calls[0]?.[1];
     if (typeof init?.body !== "string") {
@@ -57,16 +70,16 @@ describe("SEO budget ledger", () => {
       .fn<typeof fetch>()
       .mockResolvedValueOnce(
         Response.json({
+          ...exactReservedApiResponse,
           reservationId: "r-1",
-          status: "reserved",
           reservedCents: 500,
           remainingCents: 1000,
         }),
       )
       .mockResolvedValueOnce(
         Response.json({
+          ...exactReservedApiResponse,
           reservationId: "r-2",
-          status: "reserved",
           reservedCents: 500,
           remainingCents: 999,
         }),
@@ -88,6 +101,84 @@ describe("SEO budget ledger", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  it("continues once after a timed-out POST reconciles as reserved", async () => {
+    const providerDispatch = vi.fn();
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new DOMException("timed out", "TimeoutError"))
+      .mockResolvedValueOnce(
+        Response.json({
+          reservationId: exactReservedApiResponse.reservationId,
+          operationId: "operation-timeout",
+          projectId: "project-1",
+          tool: "dataforseo:keyword_research",
+          category: "research",
+          status: "reserved",
+          reservedCents: 15,
+          actualCents: null,
+          replayed: true,
+          requestId: "22222222-2222-4222-8222-222222222222",
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const reservation = await reserveSeoBudget({
+      projectId: "project-1",
+      tool: "dataforseo:keyword_research",
+      provider: "dataforseo",
+      category: "research",
+      operationId: "operation-timeout",
+    });
+    await providerDispatch(reservation);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "https://control.example/api/internal/seo/reservations/by-operation/operation-timeout",
+    );
+    expect(reservation).toMatchObject({
+      status: "reserved",
+      actualCents: null,
+      replayed: true,
+    });
+    expect(providerDispatch).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["reserved replay", "reserved", null, true],
+    ["settled", "settled", 12, true],
+    ["uncertain", "uncertain", null, true],
+    ["released", "released", 0, true],
+  ] as const)(
+    "refuses %s before provider dispatch",
+    async (_label, status, actualCents, replayed) => {
+      const providerDispatch = vi.fn();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>().mockResolvedValue(
+          Response.json({
+            reservationId: exactReservedApiResponse.reservationId,
+            status,
+            reservedCents: 15,
+            actualCents,
+            replayed,
+            requestId: "33333333-3333-4333-8333-333333333333",
+          }),
+        ),
+      );
+
+      await expect(
+        reserveSeoBudget({
+          projectId: "project-1",
+          tool: "dataforseo:keyword_research",
+          provider: "dataforseo",
+          category: "research",
+          operationId: "operation-replay",
+        }).then(providerDispatch),
+      ).rejects.toThrow("not dispatchable");
+      expect(providerDispatch).not.toHaveBeenCalled();
+    },
+  );
 
   it("fails closed before network when project scope is absent", async () => {
     await expect(

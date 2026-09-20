@@ -170,6 +170,7 @@ export function KeywordSuggestionStep({
         data: { projectId, domain, locationCode },
       }),
     enabled: labsSupported,
+    retry: false,
   });
 
   const data = suggestionsQuery.data ?? [];

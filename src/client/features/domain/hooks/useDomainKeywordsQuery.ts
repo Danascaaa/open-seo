@@ -104,6 +104,7 @@ export function useDomainKeywordsQuery(input: DomainKeywordsQueryInput) {
         },
       }),
     staleTime: 60_000,
+    retry: false,
   });
   useEffect(() => {
     debugDomain("useDomainKeywordsQuery:state", {

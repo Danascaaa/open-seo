@@ -76,6 +76,7 @@ export function useDomainPagesQuery(input: DomainPagesQueryInput) {
         },
       }),
     staleTime: 60_000,
+    retry: false,
   });
   useEffect(() => {
     debugDomain("useDomainPagesQuery:state", {

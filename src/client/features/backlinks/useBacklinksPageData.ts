@@ -92,6 +92,7 @@ export function useBacklinksPageData({
     queryKey: ["backlinksOverview", ...baseQueryKeyParts],
     enabled: targetReady,
     staleTime: BACKLINKS_QUERY_STALE_TIME_MS,
+    retry: false,
     queryFn: () => getBacklinksOverview({ data: { projectId, target, scope } }),
   });
 
@@ -118,6 +119,7 @@ export function useBacklinksPageData({
     ],
     enabled: targetReady && tab === "backlinks",
     staleTime: BACKLINKS_QUERY_STALE_TIME_MS,
+    retry: false,
     queryFn: () =>
       getBacklinksRows({
         data: {
@@ -152,6 +154,7 @@ export function useBacklinksPageData({
     ],
     enabled: targetReady && tab === "domains",
     staleTime: BACKLINKS_QUERY_STALE_TIME_MS,
+    retry: false,
     queryFn: () =>
       getBacklinksReferringDomains({
         data: {
@@ -185,6 +188,7 @@ export function useBacklinksPageData({
     ],
     enabled: targetReady && tab === "pages",
     staleTime: BACKLINKS_QUERY_STALE_TIME_MS,
+    retry: false,
     queryFn: () =>
       getBacklinksTopPages({
         data: {
