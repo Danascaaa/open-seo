@@ -84,7 +84,7 @@ describe("gscClient", () => {
     const [url, init] = mocks.fetch.mock.calls[0];
     expect(url).toBe("https://www.googleapis.com/webmasters/v3/sites");
     expect(init?.headers).toMatchObject({ Authorization: "Bearer tok_123" });
-    expect(init?.redirect).toBe("error");
+    expect(init?.redirect).toBe("manual");
     expect(init?.signal).toBeInstanceOf(AbortSignal);
   });
 
@@ -277,13 +277,13 @@ describe("gscClient", () => {
 
     const [tokenUrl, tokenInit] = mocks.fetch.mock.calls[0];
     expect(tokenUrl).toBe("https://oauth2.googleapis.com/token");
-    expect(tokenInit?.redirect).toBe("error");
+    expect(tokenInit?.redirect).toBe("manual");
     expect(tokenInit?.signal).toBeInstanceOf(AbortSignal);
     const tokenBody = tokenInit?.body;
-    if (!(tokenBody instanceof URLSearchParams)) {
-      throw new Error("token body is not URLSearchParams");
+    if (typeof tokenBody !== "string") {
+      throw new Error("token body is not serialized form data");
     }
-    const assertion = tokenBody.get("assertion");
+    const assertion = new URLSearchParams(tokenBody).get("assertion");
     if (!assertion) throw new Error("service assertion missing");
     expect(decodeJwtPayload(assertion)).toMatchObject({
       iss: "seo-reader@example.iam.gserviceaccount.com",
@@ -295,7 +295,7 @@ describe("gscClient", () => {
     expect(sitesInit?.headers).toMatchObject({
       Authorization: "Bearer service-token",
     });
-    expect(sitesInit?.redirect).toBe("error");
+    expect(sitesInit?.redirect).toBe("manual");
     expect(sitesInit?.signal).toBeInstanceOf(AbortSignal);
   });
 });

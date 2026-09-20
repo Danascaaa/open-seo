@@ -13,6 +13,17 @@ export class GscServiceAccountError extends Error {
   }
 }
 
+function safeFetchFailureKind(error: unknown): string {
+  if (!(error instanceof Error)) return "network error";
+  if (error.name === "AbortError" || error.name === "TimeoutError") {
+    return "timeout";
+  }
+  const message = error.message.toLowerCase();
+  if (message.includes("redirect")) return "redirect blocked";
+  if (message.includes("signal")) return "invalid abort signal";
+  return error instanceof TypeError ? "fetch type error" : "network error";
+}
+
 type ServiceAccountCredentials = {
   clientEmail: string;
   privateKey: string;
@@ -205,17 +216,25 @@ export function createServiceAccountTokenProvider(
     try {
       response = await fetch(GOOGLE_TOKEN_URL, {
         method: "POST",
-        redirect: "error",
+        // Cloudflare Workers rejects redirect:"error" before dispatch. Manual
+        // preserves the same security boundary: never follow a response that
+        // could forward the signed assertion to another origin.
+        redirect: "manual",
         signal: AbortSignal.timeout(15_000),
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
           grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
           assertion,
-        }),
+        }).toString(),
       });
-    } catch {
+    } catch (error) {
       throw new GscServiceAccountError(
-        "Google service-account token exchange is unavailable.",
+        `Google service-account token exchange is unavailable (${safeFetchFailureKind(error)}).`,
+      );
+    }
+    if (response.status >= 300 && response.status < 400) {
+      throw new GscServiceAccountError(
+        "Google service-account token exchange refused a redirect.",
       );
     }
     if (!response.ok) {
