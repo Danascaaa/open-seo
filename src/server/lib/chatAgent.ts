@@ -27,12 +27,20 @@ subscribe("chat", (event) => {
 // response under providerMetadata.openrouter.usage.cost. Used by SAM to meter
 // LLM spend against the credit pool.
 const openRouterUsageSchema = z.object({
-  openrouter: z.object({ usage: z.object({ cost: z.number() }) }),
+  openrouter: z.object({ usage: z.object({ cost: z.number().nonnegative() }) }),
 });
 
 export function openRouterCostUsd(providerMetadata: unknown): number {
   const parsed = openRouterUsageSchema.safeParse(providerMetadata);
   return parsed.success ? parsed.data.openrouter.usage.cost : 0;
+}
+
+export function requireOpenRouterCostUsd(providerMetadata: unknown): number {
+  const parsed = openRouterUsageSchema.safeParse(providerMetadata);
+  if (!parsed.success) {
+    throw new Error("OpenRouter response is missing a valid usage cost");
+  }
+  return parsed.data.openrouter.usage.cost;
 }
 
 // The provider package re-exports only LanguageModelV3 itself, so the stream

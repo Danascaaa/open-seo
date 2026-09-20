@@ -46,18 +46,31 @@ or account routes.
 ## Budget behavior
 
 Every DataForSEO call made through `createDataforseoClient` reserves from the
-`research` category before network dispatch. SAM reserves from `writing` before an
-OpenRouter turn or standalone compaction. Reservations use an idempotent
-operation ID. A timed-out reservation POST is reconciled once by operation ID
-and is never replayed blindly.
+`research` category before network dispatch. SAM reserves from `writing`
+before **each** OpenRouter model step and before each standalone compaction.
+One `openrouter:sam-step` reservation covers one generation, never the whole
+40-step turn. One `openrouter:sam-compaction` reservation covers exactly one
+summary generation. Reservations use an idempotent operation ID. A timed-out
+reservation POST is reconciled once by operation ID and is never replayed
+blindly.
+
+SAM bounds every step's serialized messages to 128,000 UTF-8 bytes in addition
+to Think's 160,000-token context guard and 16,000-token output cap. The tariff
+for `openrouter:sam-step` must cover the configured model at the full
+160,000-input/16,000-output token limits, including the fixed system prompt and
+skills. Compaction is independently bounded to 128,000 UTF-8 input bytes and
+4,000 output tokens.
 
 The reservation amount comes only from `SEO_PAID_OPERATION_LIMITS_JSON`; there
-is no permissive default. Known provider cost settles the reservation and releases the unused amount.
+is no permissive default. Known provider cost settles the reservation and
+releases the unused amount.
 A timeout, connection loss, or ambiguous provider error marks it `uncertain`
-and preserves the reservation. If actual cost exceeds the reservation, the
-central ledger records the debt and freezes the category. This limits blast
-radius to one in-flight operation; it does not claim that a third-party vendor
-can never report a higher final cost.
+and preserves the reservation. A provider response without valid usage-cost
+metadata is also uncertain; it is never settled as a zero-cost call. If actual cost exceeds the reservation, the
+central ledger records the debt and freezes the category. Concurrent calls may
+each hold a reservation; the central ledger enforces their aggregate against
+the category balance. No claim is made that only one operation can be in
+flight or that a third-party vendor can never report a higher final cost.
 
 DataForSEO automatic 5xx retries are disabled because a failed HTTP response
 does not prove that a paid live request was not processed.
@@ -67,7 +80,9 @@ does not prove that a paid live request was not processed.
 `tools/list` exposes only `OPENSEO_SERVICE_TOOLS`. Every service `tools/call`
 must also carry a `projectId` from `OPENSEO_SERVICE_PROJECT_IDS`; `whoami` is
 the only projectless discovery call. Existing Cloudflare Access, OAuth and
-personal API-key behavior is unchanged.
+personal API-key authentication paths are preserved. Paid calls from the UI,
+MCP and cron still fail closed when their project or exact paid-operation cost
+is not configured.
 
 ## Rollback
 
@@ -87,7 +102,8 @@ Deployment requires all of the following:
 1. DataForSEO credentials in the platform vault.
 2. Central ledger URL/token and allowlists for the three real OpenSEO project
    IDs.
-3. Cloudflare R2 enabled and Alchemy OAuth carrying `access:write`.
+3. Cloudflare R2 enabled. Alchemy OAuth `access:write` was verified on the
+   BTPScale account on 2026-09-20; do not repeat the login during deployment.
 4. A reviewed plan/diff, followed by the first deploy with Worker logs open.
 
 No paid provider call is part of validation. Unit tests use mocked ledger and
