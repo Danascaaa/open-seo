@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { fetchKeywordMetricsForList } from "./keyword-metrics";
 
+vi.mock("cloudflare:workers", () => ({ env: {} }));
+
 vi.mock("@/server/budget/ledger", () => ({
   assertPaidOperationsEnabled: vi.fn().mockResolvedValue(undefined),
 }));
