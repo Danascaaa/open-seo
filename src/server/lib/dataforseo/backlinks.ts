@@ -6,6 +6,7 @@ import {
 import { createDataforseoBillingClassifier } from "@/server/lib/dataforseoBillingClassification";
 import { AppError } from "@/server/lib/errors";
 import { dataforseoPost } from "@/server/lib/dataforseo/core";
+import { assertPaidInteger } from "@/server/lib/dataforseo/paid-input-guards";
 import {
   assertOk,
   buildTaskBilling,
@@ -204,6 +205,7 @@ export async function fetchBacklinksSummary(input: BacklinksRequest) {
 }
 
 export async function fetchBacklinksRows(input: BacklinksListRequest) {
+  assertPaidInteger("limit", input.limit ?? 100, 1, 200);
   const spamFilterOptions = normalizeBacklinksSpamFilterOptions(input);
   const filters = combineFilters(
     input.filters,
@@ -239,6 +241,7 @@ export async function fetchBacklinksRows(input: BacklinksListRequest) {
 }
 
 export async function fetchReferringDomains(input: BacklinksListRequest) {
+  assertPaidInteger("limit", input.limit ?? 100, 1, 200);
   const spamFilterOptions = normalizeBacklinksSpamFilterOptions(input);
   const filters = combineFilters(
     input.filters,
@@ -277,6 +280,7 @@ export async function fetchReferringDomains(input: BacklinksListRequest) {
 }
 
 export async function fetchDomainPagesSummary(input: BacklinksListRequest) {
+  assertPaidInteger("limit", input.limit ?? 100, 1, 200);
   const filters =
     input.filters && input.filters.length > 0 ? input.filters : undefined;
   const response = await dataforseoPost(
@@ -310,6 +314,10 @@ export async function fetchDomainPagesSummary(input: BacklinksListRequest) {
 }
 
 export async function fetchBacklinksHistory(input: BacklinksTimeseriesRequest) {
+  const dateFrom = Date.parse(`${input.dateFrom}T00:00:00Z`);
+  const dateTo = Date.parse(`${input.dateTo}T00:00:00Z`);
+  const rangeDays = (dateTo - dateFrom) / 86_400_000 + 1;
+  assertPaidInteger("date range days", rangeDays, 1, 366);
   const response = await dataforseoPost(
     "/v3/backlinks/history/live",
     [

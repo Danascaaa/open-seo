@@ -123,9 +123,13 @@ vi.mock("@/server/lib/dataforseo/ai", () => ({
 import {
   createDataforseoClient,
   mapDataforseoPathToCreditFeature,
+  prepareDataforseoBatch,
 } from "@/server/lib/dataforseo/client";
 import { DataforseoChargedTaskError } from "@/server/lib/dataforseo/envelope";
-import { fetchBacklinksSummary } from "@/server/lib/dataforseo/backlinks";
+import {
+  fetchBacklinksHistory,
+  fetchBacklinksSummary,
+} from "@/server/lib/dataforseo/backlinks";
 
 const billingCustomer = {
   organizationId: "org_123",
@@ -429,6 +433,102 @@ describe("meterDataforseoCall with split balances", () => {
     expect(topupCall![0].properties?.balanceFeatureId).toBe(
       AUTUMN_SEO_DATA_TOPUP_BALANCE_FEATURE_ID,
     );
+  });
+});
+
+describe("prepared paid call batches", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    isHostedServerAuthModeMock.mockResolvedValue(false);
+    reserveSeoBudgetMock.mockImplementation(async () => ({
+      reservationId: crypto.randomUUID(),
+      operationId: crypto.randomUUID(),
+      status: "reserved",
+      reservedCents: 10,
+      actualCents: null,
+      remainingCents: 1000,
+      replayed: false,
+    }));
+    releaseSeoBudgetMock.mockResolvedValue(undefined);
+    commitSeoBudgetMock.mockResolvedValue(undefined);
+    markSeoBudgetUncertainMock.mockResolvedValue(undefined);
+    vi.mocked(fetchBacklinksSummary).mockResolvedValue({
+      data: { rank: 42 },
+      billing: { costUsd: 0.01, path: ["backlinks", "summary"] },
+    });
+    vi.mocked(fetchBacklinksHistory).mockResolvedValue({
+      data: [],
+      billing: { costUsd: 0.02, path: ["backlinks", "history"] },
+    });
+  });
+
+  it("creates every reservation before the first provider dispatch", async () => {
+    const client = createDataforseoClient(billingCustomer);
+    const [summary, history, secondSummary] = await prepareDataforseoBatch([
+      () => client.backlinks.summary.prepare(backlinksInput),
+      () =>
+        client.backlinks.history.prepare({
+          target: "example.com",
+          dateFrom: "2025-01-01",
+          dateTo: "2025-01-31",
+        }),
+      () => client.backlinks.summary.prepare(backlinksInput),
+    ] as const);
+
+    expect(reserveSeoBudgetMock).toHaveBeenCalledTimes(3);
+    expect(fetchBacklinksSummary).not.toHaveBeenCalled();
+    expect(fetchBacklinksHistory).not.toHaveBeenCalled();
+
+    await summary.execute();
+    await history.execute();
+    await secondSummary.execute();
+
+    expect(commitSeoBudgetMock).toHaveBeenCalledTimes(3);
+    expect(commitSeoBudgetMock.mock.calls.map(([, cents]) => cents)).toEqual([
+      1, 2, 1,
+    ]);
+  });
+
+  it("releases prior reservations when a later reservation is refused", async () => {
+    reserveSeoBudgetMock
+      .mockResolvedValueOnce({
+        reservationId: "reservation-first",
+        operationId: "operation-first",
+        status: "reserved",
+        reservedCents: 10,
+        actualCents: null,
+        replayed: false,
+      })
+      .mockRejectedValueOnce(new Error("budget refused"));
+    const client = createDataforseoClient(billingCustomer);
+
+    await expect(
+      prepareDataforseoBatch([
+        () => client.backlinks.summary.prepare(backlinksInput),
+        () => client.backlinks.summary.prepare(backlinksInput),
+      ] as const),
+    ).rejects.toThrow("budget refused");
+
+    expect(releaseSeoBudgetMock).toHaveBeenCalledOnce();
+    expect(fetchBacklinksSummary).not.toHaveBeenCalled();
+  });
+
+  it("marks a timed-out dispatch uncertain and keeps the next call undispatched", async () => {
+    vi.mocked(fetchBacklinksSummary).mockRejectedValueOnce(
+      new DOMException("timed out", "TimeoutError"),
+    );
+    const client = createDataforseoClient(billingCustomer);
+    const [first, second] = await prepareDataforseoBatch([
+      () => client.backlinks.summary.prepare(backlinksInput),
+      () => client.backlinks.summary.prepare(backlinksInput),
+    ] as const);
+
+    await expect(first.execute()).rejects.toThrow("timed out");
+    await second.release("earlier operation timed out");
+
+    expect(markSeoBudgetUncertainMock).toHaveBeenCalledOnce();
+    expect(releaseSeoBudgetMock).toHaveBeenCalledOnce();
+    expect(fetchBacklinksSummary).toHaveBeenCalledOnce();
   });
 });
 

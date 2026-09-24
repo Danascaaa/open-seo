@@ -13,6 +13,7 @@ import {
   type LighthouseStrategy,
 } from "@/server/lib/dataforseoLighthousePayload";
 import type { StoredLighthousePayload } from "@/server/lib/lighthouseStoredPayload";
+import { AppError } from "@/server/lib/errors";
 
 const LIGHTHOUSE_PATH = "/v3/on_page/lighthouse/live/json";
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -35,6 +36,21 @@ export async function fetchLighthouseResult(input: {
   url: string;
   strategy: LighthouseStrategy;
 }): Promise<DataforseoApiResponse<StoredLighthousePayload>> {
+  let url: URL;
+  try {
+    url = new URL(input.url);
+  } catch {
+    throw new AppError("VALIDATION_ERROR", "Lighthouse URL is invalid");
+  }
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw new AppError(
+      "VALIDATION_ERROR",
+      "Lighthouse URL must use HTTP or HTTPS",
+    );
+  }
+  if (input.strategy !== "desktop" && input.strategy !== "mobile") {
+    throw new AppError("VALIDATION_ERROR", "Lighthouse strategy is invalid");
+  }
   // Billed, non-idempotent POST: a 5xx does not prove the provider skipped
   // the charge, so never replay it. The response is taken un-consumed (unlike
   // dataforseoPost) so the multi-MB body read happens inside the parse lock,

@@ -12,6 +12,7 @@ import {
   type DataforseoTaskLike,
 } from "@/server/lib/dataforseo/envelope";
 import { AppError } from "@/server/lib/errors";
+import { assertPaidInteger } from "@/server/lib/dataforseo/paid-input-guards";
 
 // Consumers pick fields generically (pickRowFields), so listing rows stay an
 // untyped record.
@@ -48,6 +49,7 @@ export async function fetchBusinessListingsSearch(input: {
   limit: number;
   offset?: number;
 }): Promise<DataforseoApiResponse<BusinessListingItem[]>> {
+  assertPaidInteger("limit", input.limit, 1, 100);
   const response = await dataforseoPost<
     DataforseoItemsTask<BusinessListingItem>
   >("/v3/business_data/business_listings/search/live", [
@@ -103,6 +105,7 @@ export async function fetchQuestionsAnswers(input: {
   languageCode: string;
   depth: number;
 }): Promise<DataforseoApiResponse<Record<string, unknown>[]>> {
+  assertPaidInteger("depth", input.depth, 1, 100);
   const response = await dataforseoPost(
     "/v3/business_data/google/questions_and_answers/live",
     [
@@ -127,6 +130,12 @@ export async function fetchQuestionsAnswers(input: {
 export async function fetchMyBusinessInfo(
   input: { keyword: string } & BusinessLocationInput,
 ): Promise<DataforseoApiResponse<Record<string, unknown> | null>> {
+  if (!input.keyword.trim()) {
+    throw new AppError(
+      "VALIDATION_ERROR",
+      "keyword must identify one business",
+    );
+  }
   const response = await dataforseoPost<DataforseoItemsTask<unknown>>(
     "/v3/business_data/google/my_business_info/live",
     [
@@ -198,6 +207,7 @@ export async function postGoogleReviewsTask(
       includeOtherSources: boolean;
     },
 ): Promise<DataforseoApiResponse<string>> {
+  assertPaidInteger("depth", input.depth, 10, 200);
   if (input.includeOtherSources) {
     return postedTaskId(
       await dataforseoPost<DataforseoTaskLike & { id?: string }>(
@@ -240,6 +250,7 @@ export async function postGoogleReviewsTask(
 export async function postMyBusinessUpdatesTask(
   input: { keyword: string; depth: number } & BusinessLocationInput,
 ): Promise<DataforseoApiResponse<string>> {
+  assertPaidInteger("depth", input.depth, 10, 100);
   return postedTaskId(
     await dataforseoPost<DataforseoTaskLike & { id?: string }>(
       "/v3/business_data/google/my_business_updates/task_post",

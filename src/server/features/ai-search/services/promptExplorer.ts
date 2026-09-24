@@ -3,6 +3,7 @@ import type { BillingCustomerContext } from "@/server/billing/subscription";
 import { createDataforseoClient } from "@/server/lib/dataforseo";
 import type { LlmResponseResult } from "@/server/lib/dataforseoLlmSchemas";
 import { AppError } from "@/server/lib/errors";
+import { assertPaidOperationsEnabled } from "@/server/budget/ledger";
 import {
   AI_SEARCH_PROMPT_CACHE_NAMESPACE,
   buildCacheKey,
@@ -47,6 +48,10 @@ export async function explorePrompt(
   input: PromptExplorerInput,
   billingCustomer: BillingCustomerContext,
 ): Promise<PromptExplorerResult> {
+  // This operation remains disabled until its model, reasoning and web-search
+  // charges have a provider-backed maximum. Refuse the whole request before
+  // another selected model can reserve or dispatch work.
+  await assertPaidOperationsEnabled(["dataforseo:fetchLlmResponse"]);
   const dataforseo = createDataforseoClient(billingCustomer);
   const highlightBrand = input.highlightBrand?.trim() || null;
 

@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { dataforseoPost } from "@/server/lib/dataforseo/core";
 import {
+  assertPaidArrayLength,
+  assertPaidInteger,
+} from "@/server/lib/dataforseo/paid-input-guards";
+import {
   assertKeywordOverviewKeywords,
   assertPositiveIntegerAtMost,
   assertRelatedKeywordsDepth,
@@ -325,6 +329,7 @@ export async function fetchRelevantPages(input: {
   orderBy?: string[];
   filters?: unknown[];
 }): Promise<DataforseoApiResponse<RelevantPagesPage>> {
+  assertPaidInteger("limit", input.limit, 1, 200);
   const response = await dataforseoPost<DataforseoItemsTask<RelevantPagesItem>>(
     "/v3/dataforseo_labs/google/relevant_pages/live",
     [
@@ -382,6 +387,8 @@ export async function fetchSerpCompetitors(input: {
   limit: number;
   offset?: number;
 }): Promise<DataforseoApiResponse<SerpCompetitorItem[]>> {
+  assertPaidArrayLength("keywords", input.keywords, 1, 100);
+  assertPaidInteger("limit", input.limit, 1, 100);
   const response = await dataforseoPost<
     DataforseoItemsTask<SerpCompetitorItem>
   >("/v3/dataforseo_labs/google/serp_competitors/live", [

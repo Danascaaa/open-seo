@@ -4,10 +4,12 @@ import {
   createDataforseoClient,
   fetchBusinessDataTaskResult,
   fetchBusinessListingsCategories,
+  prepareDataforseoBatch,
   type BusinessTaskEndpoint,
   type BusinessTaskOutcome,
 } from "@/server/lib/dataforseo";
 import { AppError } from "@/server/lib/errors";
+import { assertPaidOperationsEnabled } from "@/server/budget/ledger";
 import { buildCacheKey, getCached, setCached } from "@/server/lib/r2-cache";
 import { buildProjectMeta } from "@/server/mcp/context";
 import { mcpResponse } from "@/server/mcp/formatters";
@@ -931,6 +933,21 @@ export const getLocalRankGridTool = {
     const points = buildRankGridPoints(args.center, gridSize, spacingKm);
     const client = createDataforseoClient(context.billing);
     const languageCode = args.languageCode ?? context.project.languageCode;
+    await assertPaidOperationsEnabled(["dataforseo:fetchLocalSerp"]);
+    const preparedSearches = await prepareDataforseoBatch(
+      points.map(
+        (point) => () =>
+          client.serp.local.prepare({
+            keyword: args.keyword,
+            locationCoordinate: formatLocalSerpCoordinate({ ...point, zoom }),
+            languageCode,
+            searchType: "maps",
+            device: args.device ?? "mobile",
+            depth: RANK_GRID_DEPTH,
+            searchPlaces: false,
+          }),
+      ),
+    );
 
     let matchedBusiness: {
       title: string | null;
@@ -939,17 +956,15 @@ export const getLocalRankGridTool = {
     } | null = null;
     let lastError: unknown = null;
 
-    const searchPoint = async (point: GridPoint): Promise<GridPointResult> => {
+    const searchPoint = async (
+      point: GridPoint,
+      index: number,
+    ): Promise<GridPointResult> => {
       try {
-        const items = await client.serp.local({
-          keyword: args.keyword,
-          locationCoordinate: formatLocalSerpCoordinate({ ...point, zoom }),
-          languageCode,
-          searchType: "maps",
-          device: args.device ?? "mobile",
-          depth: RANK_GRID_DEPTH,
-          searchPlaces: false,
-        });
+        const call = preparedSearches[index];
+        if (!call)
+          throw new AppError("INTERNAL_ERROR", "Rank grid batch is incomplete");
+        const items = await call.execute();
         const match = matchGridItem(items, args.target);
         if (match && !matchedBusiness) {
           matchedBusiness = {
@@ -984,9 +999,22 @@ export const getLocalRankGridTool = {
     // A few points at a time; an abort-worthy failure rejects its batch and
     // stops later batches from dispatching (and billing).
     const grid: GridPointResult[] = [];
-    for (let i = 0; i < points.length; i += RANK_GRID_CONCURRENCY) {
-      const batch = points.slice(i, i + RANK_GRID_CONCURRENCY);
-      grid.push(...(await Promise.all(batch.map(searchPoint))));
+    try {
+      for (let i = 0; i < points.length; i += RANK_GRID_CONCURRENCY) {
+        const batch = points.slice(i, i + RANK_GRID_CONCURRENCY);
+        grid.push(
+          ...(await Promise.all(
+            batch.map((point, offset) => searchPoint(point, i + offset)),
+          )),
+        );
+      }
+    } catch (error) {
+      await Promise.allSettled(
+        preparedSearches.map((call) =>
+          call.release("rank grid stopped before all points dispatched"),
+        ),
+      );
+      throw error;
     }
 
     // Every point failing means a systemic failure (auth, balance, bad market),

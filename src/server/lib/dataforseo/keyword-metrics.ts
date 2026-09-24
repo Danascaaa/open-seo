@@ -1,4 +1,8 @@
-import type { createDataforseoClient } from "@/server/lib/dataforseo/client";
+import {
+  prepareDataforseoBatch,
+  type createDataforseoClient,
+} from "@/server/lib/dataforseo/client";
+import { assertPaidOperationsEnabled } from "@/server/budget/ledger";
 import type { AdsKeywordItem } from "@/server/lib/dataforseo/google-ads";
 import type { KeywordOverviewItem } from "@/server/lib/dataforseo/labs";
 import type { CreditFeature } from "@/shared/billing-credit-features";
@@ -145,22 +149,36 @@ export async function fetchKeywordMetricsForList(
         );
       }
     } else if (params.locationName) {
-      const [adsItems, labsItems] = await Promise.all([
-        client.keywords.adsSearchVolume({
-          keywords,
-          locationCode: params.locationCode,
-          locationName: params.locationName,
-          languageCode: params.languageCode,
-          creditFeature: params.creditFeature,
-        }),
-        client.labs.keywordOverview({
-          keywords,
-          locationCode: params.locationCode,
-          languageCode: params.languageCode,
-          includeClickstreamData: params.includeClickstreamData ?? false,
-          creditFeature: params.creditFeature,
-        }),
+      await assertPaidOperationsEnabled([
+        "dataforseo:fetchAdsSearchVolume",
+        "dataforseo:fetchKeywordOverview",
       ]);
+      const [adsCall, labsCall] = await prepareDataforseoBatch([
+        () =>
+          client.keywords.adsSearchVolume.prepare({
+            keywords,
+            locationCode: params.locationCode,
+            locationName: params.locationName,
+            languageCode: params.languageCode,
+            creditFeature: params.creditFeature,
+          }),
+        () =>
+          client.labs.keywordOverview.prepare({
+            keywords,
+            locationCode: params.locationCode,
+            languageCode: params.languageCode,
+            includeClickstreamData: params.includeClickstreamData ?? false,
+            creditFeature: params.creditFeature,
+          }),
+      ] as const);
+      let adsItems: Awaited<ReturnType<typeof adsCall.execute>>;
+      try {
+        adsItems = await adsCall.execute();
+      } catch (error) {
+        await labsCall.release("earlier keyword metrics call failed");
+        throw error;
+      }
+      const labsItems = await labsCall.execute();
       rows.push(...mergeLocalAndNationalRows(keywords, adsItems, labsItems));
     } else {
       const items = await client.labs.keywordOverview({

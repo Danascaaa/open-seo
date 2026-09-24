@@ -21,8 +21,36 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("cloudflare:workers", () => ({ env: {} }));
 
+vi.mock("@/server/budget/ledger", () => ({
+  assertPaidOperationsEnabled: vi.fn().mockResolvedValue(undefined),
+}));
+
+// The rank grid reserves its searches through `serp.local.prepare`; the fakes
+// only define the direct call, so prepare() defers to it at execute time.
+function withLocalPrepare(client: unknown): unknown {
+  const local = (client as { serp?: { local?: unknown } } | undefined)?.serp
+    ?.local as
+    | ((input: unknown) => Promise<unknown>) & { prepare?: unknown }
+    | undefined;
+  if (typeof local === "function" && !local.prepare) {
+    local.prepare = async (input: unknown) => ({
+      execute: () => local(input),
+      release: async () => {},
+    });
+  }
+  return client;
+}
+
 vi.mock("@/server/lib/dataforseo", () => ({
-  createDataforseoClient: mocks.createDataforseoClient,
+  createDataforseoClient: (...args: unknown[]) =>
+    withLocalPrepare(mocks.createDataforseoClient(...args)),
+  prepareDataforseoBatch: async (
+    factories: readonly (() => Promise<unknown>)[],
+  ) => {
+    const prepared: unknown[] = [];
+    for (const factory of factories) prepared.push(await factory());
+    return prepared;
+  },
   fetchBusinessDataTaskResult: mocks.fetchBusinessDataTaskResult,
   fetchBusinessListingsCategories: mocks.fetchBusinessListingsCategories,
 }));
