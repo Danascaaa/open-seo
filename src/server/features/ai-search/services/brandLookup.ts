@@ -1,7 +1,11 @@
 import { waitUntil } from "cloudflare:workers";
 import { identity, sortBy } from "remeda";
 import type { BillingCustomerContext } from "@/server/billing/subscription";
-import { createDataforseoClient } from "@/server/lib/dataforseo";
+import {
+  createDataforseoClient,
+  prepareDataforseoBatch,
+  type PreparedDataforseoCall,
+} from "@/server/lib/dataforseo";
 import {
   buildLlmTarget,
   CHATGPT_LANGUAGE_CODE,
@@ -10,6 +14,7 @@ import {
 } from "@/server/lib/dataforseo";
 import type { LlmCrossAggregatedItem } from "@/server/lib/dataforseoLlmSchemas";
 import { AppError } from "@/server/lib/errors";
+import { assertPaidOperationsEnabled } from "@/server/budget/ledger";
 import { buildCacheKey, getCached, setCached } from "@/server/lib/r2-cache";
 import {
   resolveCompetitorGroups,
@@ -103,44 +108,46 @@ export async function getBrandLookup(
   }
 
   const dataforseo = createDataforseoClient(billingCustomer);
+  await assertPaidOperationsEnabled([
+    "dataforseo:fetchLlmAggregatedMetrics",
+    "dataforseo:fetchLlmTopPages",
+    "dataforseo:fetchLlmMentionsSearch",
+    ...(competitorGroups.length > 0
+      ? ["dataforseo:fetchLlmCrossAggregatedMetrics"]
+      : []),
+  ]);
+  const prepared = await prepareBrandLookupBatch({
+    detected,
+    includeSubdomains,
+    input,
+    competitorGroups,
+    dataforseo,
+  });
 
-  // Settle each platform independently so a failure in one doesn't discard the
-  // other. Keep the metered DataForSEO calls sequenced: in hosted mode each
-  // call checks balance before execution and records spend after, so parallel
-  // fan-out can overrun a low remaining balance.
-  const settled: Array<PromiseSettledResult<PlatformBundle>> = [];
-  for (const platform of PLATFORMS) {
-    settled.push(
-      await settle(() =>
-        fetchPlatformData(
-          platform,
-          detected,
-          includeSubdomains,
-          input,
-          dataforseo,
+  let settled: Array<PromiseSettledResult<PlatformBundle>>;
+  let crossOutcomes: CrossOutcome[];
+  try {
+    settled = [];
+    for (const platform of PLATFORMS) {
+      settled.push(
+        await settle(() =>
+          fetchPreparedPlatformData(prepared.platforms[platform]),
         ),
+      );
+    }
+    rethrowIfBlockingAiSearchError(settled);
+    crossOutcomes =
+      prepared.cross === null
+        ? []
+        : await fetchPreparedCrossAggregated(prepared.cross);
+  } catch (error) {
+    await Promise.allSettled(
+      prepared.all.map((call) =>
+        call.release("brand lookup stopped before dispatch"),
       ),
     );
+    throw error;
   }
-
-  rethrowIfBlockingAiSearchError(settled);
-
-  const crossSettled =
-    competitorGroups.length > 0
-      ? await settle(() =>
-          fetchCrossAggregated(
-            detected,
-            competitorGroups,
-            includeSubdomains,
-            input,
-            dataforseo,
-          ),
-        )
-      : ({ status: "fulfilled", value: [] } as PromiseFulfilledResult<
-          CrossOutcome[]
-        >);
-  if (crossSettled.status === "rejected") throw crossSettled.reason;
-  const crossOutcomes = crossSettled.value;
 
   const platformBundles: PlatformOutcome[] = settled.map((settledResult, i) => {
     const platform = PLATFORMS[i];
@@ -219,54 +226,22 @@ type PlatformFetchInput = Pick<
   "locationCode" | "languageCode"
 >;
 
-async function fetchPlatformData(
-  platform: LlmPlatform,
-  detected: ReturnType<typeof detectTarget>,
-  includeSubdomains: boolean,
-  input: PlatformFetchInput,
-  dataforseo: ReturnType<typeof createDataforseoClient>,
+type PreparedPlatformCalls = {
+  aggregated: PreparedDataforseoCall<PlatformBundle["aggregated"]>;
+  topPages: PreparedDataforseoCall<PlatformBundle["topPages"]>;
+  mentions: PreparedDataforseoCall<PlatformBundle["mentions"]>;
+  platform: LlmPlatform;
+};
+
+async function fetchPreparedPlatformData(
+  calls: PreparedPlatformCalls,
 ): Promise<PlatformBundle> {
-  const target = buildLlmTarget({
-    type: detected.type,
-    value: detected.value,
-    includeSubdomains,
-  });
-
-  // ChatGPT mentions DB only contains US/en data per DataForSEO docs.
-  const locationCode =
-    platform === "chat_gpt" ? CHATGPT_LOCATION_CODE : input.locationCode;
-  const languageCode =
-    platform === "chat_gpt" ? CHATGPT_LANGUAGE_CODE : input.languageCode;
-
+  const { platform } = calls;
   // Settle sub-calls independently so one failure doesn't discard the others we
   // already paid for, but keep them sequenced for hosted billing checks.
-  const aggregated = await settle(() =>
-    dataforseo.aiSearch.aggregatedMetrics({
-      target,
-      platform,
-      locationCode,
-      languageCode,
-      internalListLimit: 20,
-    }),
-  );
-  const topPages = await settle(() =>
-    dataforseo.aiSearch.topPages({
-      target,
-      platform,
-      locationCode,
-      languageCode,
-      itemsListLimit: TOP_SOURCES_PER_PLATFORM,
-    }),
-  );
-  const mentions = await settle(() =>
-    dataforseo.aiSearch.mentionsSearch({
-      target,
-      platform,
-      locationCode,
-      languageCode,
-      limit: MENTIONS_PER_PLATFORM,
-    }),
-  );
+  const aggregated = await settle(() => calls.aggregated.execute());
+  const topPages = await settle(() => calls.topPages.execute());
+  const mentions = await settle(() => calls.mentions.execute());
 
   rethrowIfBlockingAiSearchError([aggregated, topPages, mentions]);
 
@@ -300,51 +275,17 @@ async function fetchPlatformData(
  * URL-level targeting — so every group (target and competitors) uses the same
  * subdomain rule and the UI labels the section domain-level under URL scopes.
  */
-async function fetchCrossAggregated(
-  detected: ReturnType<typeof detectTarget>,
-  competitors: CompetitorGroup[],
-  includeSubdomains: boolean,
-  input: PlatformFetchInput,
-  dataforseo: ReturnType<typeof createDataforseoClient>,
-): Promise<CrossOutcome[]> {
-  const groups = [
-    {
-      key: detected.value,
-      target: buildLlmTarget({
-        type: detected.type,
-        value: detected.value,
-        includeSubdomains,
-      }),
-    },
-    ...competitors.map((competitor) => ({
-      key: competitor.label,
-      target: buildLlmTarget({
-        type: competitor.detected.type,
-        value: competitor.detected.value,
-        includeSubdomains,
-      }),
-    })),
-  ];
+type PreparedCrossCalls = Record<
+  LlmPlatform,
+  PreparedDataforseoCall<LlmCrossAggregatedItem[]>
+>;
 
+async function fetchPreparedCrossAggregated(
+  calls: PreparedCrossCalls,
+): Promise<CrossOutcome[]> {
   const settled: Array<PromiseSettledResult<LlmCrossAggregatedItem[]>> = [];
   for (const platform of PLATFORMS) {
-    settled.push(
-      await settle(() =>
-        dataforseo.aiSearch.crossAggregatedMetrics({
-          groups,
-          platform,
-          // ChatGPT mentions DB only contains US/en data per DataForSEO docs.
-          locationCode:
-            platform === "chat_gpt"
-              ? CHATGPT_LOCATION_CODE
-              : input.locationCode,
-          languageCode:
-            platform === "chat_gpt"
-              ? CHATGPT_LANGUAGE_CODE
-              : input.languageCode,
-        }),
-      ),
-    );
+    settled.push(await settle(() => calls[platform].execute()));
   }
 
   rethrowIfBlockingAiSearchError(settled);
@@ -360,6 +301,112 @@ async function fetchCrossAggregated(
     );
     return { platform, status: "error" as const, items: [] };
   });
+}
+
+function platformMarket(platform: LlmPlatform, input: PlatformFetchInput) {
+  return {
+    locationCode:
+      platform === "chat_gpt" ? CHATGPT_LOCATION_CODE : input.locationCode,
+    languageCode:
+      platform === "chat_gpt" ? CHATGPT_LANGUAGE_CODE : input.languageCode,
+  };
+}
+
+async function prepareBrandLookupBatch(args: {
+  detected: ReturnType<typeof detectTarget>;
+  includeSubdomains: boolean;
+  input: PlatformFetchInput;
+  competitorGroups: CompetitorGroup[];
+  dataforseo: ReturnType<typeof createDataforseoClient>;
+}): Promise<{
+  platforms: Record<LlmPlatform, PreparedPlatformCalls>;
+  cross: PreparedCrossCalls | null;
+  all: PreparedDataforseoCall<unknown>[];
+}> {
+  const target = buildLlmTarget({
+    type: args.detected.type,
+    value: args.detected.value,
+    includeSubdomains: args.includeSubdomains,
+  });
+  const factories: Array<() => Promise<PreparedDataforseoCall<unknown>>> = [];
+  for (const platform of PLATFORMS) {
+    const market = platformMarket(platform, args.input);
+    factories.push(
+      () =>
+        args.dataforseo.aiSearch.aggregatedMetrics.prepare({
+          target,
+          platform,
+          ...market,
+          internalListLimit: 20,
+        }),
+      () =>
+        args.dataforseo.aiSearch.topPages.prepare({
+          target,
+          platform,
+          ...market,
+          itemsListLimit: TOP_SOURCES_PER_PLATFORM,
+        }),
+      () =>
+        args.dataforseo.aiSearch.mentionsSearch.prepare({
+          target,
+          platform,
+          ...market,
+          limit: MENTIONS_PER_PLATFORM,
+        }),
+    );
+  }
+  const groups = [
+    { key: args.detected.value, target },
+    ...args.competitorGroups.map((competitor) => ({
+      key: competitor.label,
+      target: buildLlmTarget({
+        type: competitor.detected.type,
+        value: competitor.detected.value,
+        includeSubdomains: args.includeSubdomains,
+      }),
+    })),
+  ];
+  if (args.competitorGroups.length > 0) {
+    for (const platform of PLATFORMS) {
+      factories.push(() =>
+        args.dataforseo.aiSearch.crossAggregatedMetrics.prepare({
+          groups,
+          platform,
+          ...platformMarket(platform, args.input),
+        }),
+      );
+    }
+  }
+  const all = await prepareDataforseoBatch(factories);
+  const at = <T>(index: number): PreparedDataforseoCall<T> => {
+    const call = all[index];
+    if (!call) throw new AppError("INTERNAL_ERROR", "Paid batch is incomplete");
+    return call as PreparedDataforseoCall<T>;
+  };
+  return {
+    platforms: {
+      chat_gpt: {
+        platform: "chat_gpt",
+        aggregated: at<PlatformBundle["aggregated"]>(0),
+        topPages: at<PlatformBundle["topPages"]>(1),
+        mentions: at<PlatformBundle["mentions"]>(2),
+      },
+      google: {
+        platform: "google",
+        aggregated: at<PlatformBundle["aggregated"]>(3),
+        topPages: at<PlatformBundle["topPages"]>(4),
+        mentions: at<PlatformBundle["mentions"]>(5),
+      },
+    },
+    cross:
+      args.competitorGroups.length > 0
+        ? {
+            chat_gpt: at<LlmCrossAggregatedItem[]>(6),
+            google: at<LlmCrossAggregatedItem[]>(7),
+          }
+        : null,
+    all,
+  };
 }
 
 function rethrowIfBlockingAiSearchError(

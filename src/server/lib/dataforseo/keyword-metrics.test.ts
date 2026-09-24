@@ -2,17 +2,48 @@ import { describe, expect, it, vi } from "vitest";
 
 import { fetchKeywordMetricsForList } from "./keyword-metrics";
 
+vi.mock("@/server/budget/ledger", () => ({
+  assertPaidOperationsEnabled: vi.fn().mockResolvedValue(undefined),
+}));
+
 type Client = Parameters<typeof fetchKeywordMetricsForList>[0];
 
 // Minimal fake client exposing only the two endpoints the helper touches.
 function fakeClient(overrides: {
-  keywordOverview?: Client["labs"]["keywordOverview"];
-  adsSearchVolume?: Client["keywords"]["adsSearchVolume"];
+  keywordOverview?: (
+    input: Parameters<Client["labs"]["keywordOverview"]>[0],
+  ) => ReturnType<Client["labs"]["keywordOverview"]>;
+  adsSearchVolume?: (
+    input: Parameters<Client["keywords"]["adsSearchVolume"]>[0],
+  ) => ReturnType<Client["keywords"]["adsSearchVolume"]>;
 }): Client {
   return {
-    labs: { keywordOverview: overrides.keywordOverview ?? vi.fn() },
-    keywords: { adsSearchVolume: overrides.adsSearchVolume ?? vi.fn() },
+    labs: {
+      keywordOverview: withPrepare<Client["labs"]["keywordOverview"]>(
+        overrides.keywordOverview ?? vi.fn(),
+      ),
+    },
+    keywords: {
+      adsSearchVolume: withPrepare<Client["keywords"]["adsSearchVolume"]>(
+        overrides.adsSearchVolume ?? vi.fn(),
+      ),
+    },
   };
+}
+
+function withPrepare<T>(call: unknown): T {
+  const callable = call as unknown as {
+    (input: unknown): Promise<unknown>;
+    prepare?: (input: unknown) => Promise<{
+      execute: () => Promise<unknown>;
+      release: () => Promise<void>;
+    }>;
+  };
+  callable.prepare = async (input) => ({
+    execute: () => callable(input),
+    release: () => Promise.resolve(),
+  });
+  return callable as unknown as T;
 }
 
 describe("fetchKeywordMetricsForList", () => {

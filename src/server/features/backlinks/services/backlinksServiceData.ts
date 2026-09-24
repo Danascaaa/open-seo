@@ -4,6 +4,7 @@ import type { CreditFeature } from "@/shared/billing-credit-features";
 import {
   createDataforseoClient,
   normalizeBacklinksTarget,
+  prepareDataforseoBatch,
   type BacklinksHistoryItem,
   type BacklinksSummaryItem,
 } from "@/server/lib/dataforseo";
@@ -49,6 +50,7 @@ import {
 } from "@/server/features/backlinks/services/backlinksRowMappers";
 import { assertFilterConditionBudget } from "@/server/lib/dataforseo/filters";
 import { AppError } from "@/server/lib/errors";
+import { assertPaidOperationsEnabled } from "@/server/budget/ledger";
 
 // The page-request schemas carry projectId for the web middleware; the
 // service layer is organization-scoped and never reads it.
@@ -120,22 +122,40 @@ export async function profileBacklinksOverview(
 
   const dateRange = buildBacklinksDateRange(now);
 
-  const [summary, history] = await Promise.all([
-    dataforseo.backlinks.summary({
-      target: normalizedTarget.apiTarget,
-      includeSubdomains: normalizedTarget.includeSubdomains,
-      creditFeature,
-    }),
-    // history/live only accepts a hostname and has no include_subdomains field,
-    // so trends are unavailable for a page and subdomain-inclusive otherwise.
-    normalizedTarget.scope === "exact_url"
-      ? Promise.resolve([])
-      : dataforseo.backlinks.history({
+  const summaryInput = {
+    target: normalizedTarget.apiTarget,
+    includeSubdomains: normalizedTarget.includeSubdomains,
+    creditFeature,
+  };
+  let summary: BacklinksSummaryItem;
+  let history: BacklinksHistoryItem[];
+  if (normalizedTarget.scope === "exact_url") {
+    summary = await dataforseo.backlinks.summary(summaryInput);
+    history = [];
+  } else {
+    await assertPaidOperationsEnabled([
+      "dataforseo:fetchBacklinksSummary",
+      "dataforseo:fetchBacklinksHistory",
+    ]);
+    const [summaryCall, historyCall] = await prepareDataforseoBatch([
+      () => dataforseo.backlinks.summary.prepare(summaryInput),
+      () =>
+        dataforseo.backlinks.history.prepare({
           target: normalizedTarget.apiTarget,
           ...dateRange,
           creditFeature,
         }),
-  ]);
+    ] as const);
+    // Both reservations now exist. Provider calls stay sequential so every
+    // settlement reaches the ledger before the next paid dispatch.
+    try {
+      summary = await summaryCall.execute();
+    } catch (error) {
+      await historyCall.release("earlier batch operation failed");
+      throw error;
+    }
+    history = await historyCall.execute();
+  }
 
   const overview = buildOverviewResult({
     normalizedTarget,

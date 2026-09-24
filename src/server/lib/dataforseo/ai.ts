@@ -14,6 +14,11 @@ import {
 import { createDataforseoBillingClassifier } from "@/server/lib/dataforseoBillingClassification";
 import { AppError } from "@/server/lib/errors";
 import { dataforseoPost } from "@/server/lib/dataforseo/core";
+import {
+  assertPaidArrayLength,
+  assertPaidInteger,
+  assertPaidStringLength,
+} from "@/server/lib/dataforseo/paid-input-guards";
 import type { LlmPlatform, LlmTarget } from "@/server/lib/dataforseo/shared";
 import {
   assertOk,
@@ -61,11 +66,14 @@ type LlmMentionsSearchInput = {
 export async function fetchLlmMentionsSearch(
   input: LlmMentionsSearchInput,
 ): Promise<DataforseoApiResponse<LlmMentionItem[]>> {
+  const targets = targetList(input.target);
+  assertPaidArrayLength("targets", targets, 1, 1);
+  assertPaidInteger("limit", input.limit ?? 100, 1, 1000);
   const response = await dataforseoPost(
     "/v3/ai_optimization/llm_mentions/search/live",
     [
       {
-        target: targetList(input.target),
+        target: targets,
         platform: input.platform,
         location_code: input.locationCode,
         language_code: input.languageCode,
@@ -106,11 +114,14 @@ type LlmAggregatedMetricsInput = {
 export async function fetchLlmAggregatedMetrics(
   input: LlmAggregatedMetricsInput,
 ): Promise<DataforseoApiResponse<LlmAggregatedTotal>> {
+  const targets = targetList(input.target);
+  assertPaidArrayLength("targets", targets, 1, 1);
+  assertPaidInteger("internalListLimit", input.internalListLimit ?? 10, 1, 20);
   const response = await dataforseoPost(
     "/v3/ai_optimization/llm_mentions/aggregated_metrics/live",
     [
       {
-        target: targetList(input.target),
+        target: targets,
         platform: input.platform,
         location_code: input.locationCode,
         language_code: input.languageCode,
@@ -151,11 +162,14 @@ type LlmTopPagesInput = {
 export async function fetchLlmTopPages(
   input: LlmTopPagesInput,
 ): Promise<DataforseoApiResponse<LlmTopPagesItem[]>> {
+  const targets = targetList(input.target);
+  assertPaidArrayLength("targets", targets, 1, 1);
+  assertPaidInteger("itemsListLimit", input.itemsListLimit ?? 10, 1, 10);
   const response = await dataforseoPost(
     "/v3/ai_optimization/llm_mentions/top_pages/live",
     [
       {
-        target: targetList(input.target),
+        target: targets,
         platform: input.platform,
         location_code: input.locationCode,
         language_code: input.languageCode,
@@ -200,12 +214,8 @@ type LlmCrossAggregatedMetricsInput = {
 export async function fetchLlmCrossAggregatedMetrics(
   input: LlmCrossAggregatedMetricsInput,
 ): Promise<DataforseoApiResponse<LlmCrossAggregatedItem[]>> {
-  if (input.groups.length < 2 || input.groups.length > 10) {
-    throw new AppError(
-      "VALIDATION_ERROR",
-      "DataForSEO llm_mentions/cross_aggregated_metrics requires 2 to 10 target groups",
-    );
-  }
+  assertPaidArrayLength("target groups", input.groups, 2, 10);
+  assertPaidInteger("internalListLimit", input.internalListLimit ?? 5, 1, 10);
 
   const response = await dataforseoPost(
     "/v3/ai_optimization/llm_mentions/cross_aggregated_metrics/live",
@@ -287,6 +297,13 @@ type LlmResponseRequestFields = {
 export async function fetchLlmResponse(
   input: LlmResponsesInput,
 ): Promise<DataforseoApiResponse<LlmResponseResult>> {
+  assertPaidStringLength("userPrompt", input.userPrompt, 1, 500);
+  assertPaidInteger(
+    "maxOutputTokens",
+    input.maxOutputTokens ?? 1024,
+    256,
+    4096,
+  );
   // Fail fast on an unknown model_name: DataForSEO charges for tasks that fail
   // with `Invalid Field: 'model_name'`, so we must never dispatch one.
   if (!ACCEPTED_LLM_MODEL_NAMES[input.modelSlug].has(input.modelName)) {

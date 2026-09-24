@@ -65,6 +65,19 @@ async function config(): Promise<{
   return { baseUrl, token, paidOperationLimits: parsedLimits.data };
 }
 
+export async function assertPaidOperationsEnabled(
+  tools: readonly string[],
+): Promise<void> {
+  const { paidOperationLimits } = await config();
+  const missing = tools.find((tool) => paidOperationLimits[tool] === undefined);
+  if (missing) {
+    throw new AppError(
+      "FORBIDDEN",
+      `Opération payante indisponible : aucun plafond vérifié pour ${missing}`,
+    );
+  }
+}
+
 async function ledgerFetch(
   url: string,
   token: string,

@@ -77,18 +77,62 @@ export { mapDataforseoPathToCreditFeature };
  * spend to its own feature). The extra field is ignored by the fetchers, which
  * read named fields rather than spreading the input.
  */
+export type PreparedDataforseoCall<T> = {
+  execute: () => Promise<T>;
+  release: (reason: string) => Promise<void>;
+};
+
+export type MeteredDataforseoCall<I, T> = {
+  (input: I & { creditFeature?: CreditFeature }): Promise<T>;
+  prepare: (
+    input: I & { creditFeature?: CreditFeature },
+  ) => Promise<PreparedDataforseoCall<T>>;
+};
+
 function meter<I, T>(
   customer: BillingCustomerContext,
   fetcher: (input: I) => Promise<DataforseoApiResponse<T>>,
   defaultFeature?: CreditFeature,
-): (input: I & { creditFeature?: CreditFeature }) => Promise<T> {
-  return (input) =>
-    meterDataforseoCall(
+): MeteredDataforseoCall<I, T> {
+  const prepare = (input: I & { creditFeature?: CreditFeature }) =>
+    prepareDataforseoCall(
       customer,
       () => fetcher(input),
       input.creditFeature ?? defaultFeature,
       `dataforseo:${fetcher.name || "unknown"}`,
     );
+  return Object.assign(
+    async (input: I & { creditFeature?: CreditFeature }) =>
+      (await prepare(input)).execute(),
+    { prepare },
+  );
+}
+
+type PreparedFactory<T> = () => Promise<PreparedDataforseoCall<T>>;
+type PreparedFactories = readonly PreparedFactory<unknown>[];
+
+/**
+ * Reserves every paid call before any provider request can start. If one
+ * reservation fails, prior reservations are released and no execute closure
+ * is invoked.
+ */
+export async function prepareDataforseoBatch<const T extends PreparedFactories>(
+  factories: T,
+): Promise<{ [K in keyof T]: Awaited<ReturnType<T[K]>> }> {
+  const prepared: PreparedDataforseoCall<unknown>[] = [];
+  try {
+    for (const factory of factories) prepared.push(await factory());
+  } catch (error) {
+    await Promise.allSettled(
+      prepared.map((call) =>
+        call.release("batch reservation failed before provider dispatch"),
+      ),
+    );
+    throw error;
+  }
+  return prepared as unknown as {
+    [K in keyof T]: Awaited<ReturnType<T[K]>>;
+  };
 }
 
 export function createDataforseoClient(customer: BillingCustomerContext) {
@@ -155,12 +199,12 @@ export function createDataforseoClient(customer: BillingCustomerContext) {
   } as const;
 }
 
-async function meterDataforseoCall<T>(
+async function prepareDataforseoCall<T>(
   customer: BillingCustomerContext,
   execute: () => Promise<DataforseoApiResponse<T>>,
   creditFeature?: CreditFeature,
   budgetTool = "dataforseo:unknown",
-): Promise<T> {
+): Promise<PreparedDataforseoCall<T>> {
   const reservation = await reserveSeoBudget({
     projectId: customer.projectId,
     tool: budgetTool,
@@ -173,6 +217,41 @@ async function meterDataforseoCall<T>(
       `SEO budget reservation is not dispatchable (${reservation.status})`,
     );
   }
+  let state: "prepared" | "executing" | "finished" | "released" = "prepared";
+  return {
+    execute: async () => {
+      if (state !== "prepared") {
+        throw new AppError(
+          "INTERNAL_ERROR",
+          `Prepared paid operation cannot execute from state ${state}`,
+        );
+      }
+      state = "executing";
+      try {
+        return await executeReservedDataforseoCall(
+          customer,
+          execute,
+          reservation,
+          creditFeature,
+        );
+      } finally {
+        state = "finished";
+      }
+    },
+    release: async (reason) => {
+      if (state !== "prepared") return;
+      state = "released";
+      await releaseSeoBudget(reservation, reason);
+    },
+  };
+}
+
+async function executeReservedDataforseoCall<T>(
+  customer: BillingCustomerContext,
+  execute: () => Promise<DataforseoApiResponse<T>>,
+  reservation: Awaited<ReturnType<typeof reserveSeoBudget>>,
+  creditFeature?: CreditFeature,
+): Promise<T> {
   const isHostedMode = await isHostedServerAuthMode();
 
   if (!isHostedMode) {

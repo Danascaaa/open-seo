@@ -1,4 +1,9 @@
 import { dataforseoPost } from "@/server/lib/dataforseo/core";
+import {
+  assertPaidArrayLength,
+  assertPaidInteger,
+  assertPaidStringLength,
+} from "@/server/lib/dataforseo/paid-input-guards";
 import type { LabsMonthlySearch } from "@/server/lib/dataforseo/labs";
 import {
   assertOk,
@@ -42,6 +47,7 @@ export async function fetchAdsSearchVolume(input: {
    */
   locationName?: string;
 }): Promise<DataforseoApiResponse<AdsKeywordItem[]>> {
+  assertPaidArrayLength("keywords", input.keywords, 1, 700);
   const locationParams = input.locationName
     ? { location_name: input.locationName }
     : { location_code: input.locationCode };
@@ -68,6 +74,8 @@ export async function fetchAdsKeywordIdeas(input: {
   languageCode: string;
   limit: number;
 }): Promise<DataforseoApiResponse<AdsKeywordIdeaItem[]>> {
+  assertPaidStringLength("keyword", input.keyword, 1, 200);
+  assertPaidInteger("limit", input.limit, 1, 500);
   const response = await dataforseoPost<KeywordsDataTask<AdsKeywordIdeaItem>>(
     "/v3/keywords_data/google_ads/keywords_for_keywords/live",
     [

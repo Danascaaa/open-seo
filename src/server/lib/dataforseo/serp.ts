@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { dataforseoGet, dataforseoPost } from "@/server/lib/dataforseo/core";
+import { assertPaidInteger } from "@/server/lib/dataforseo/paid-input-guards";
 import { MAX_TASKS_PER_POST } from "@/server/lib/dataforseo/shared";
 import {
   assertOk,
@@ -89,6 +90,7 @@ export async function fetchLiveSerp(input: {
   languageCode: string;
   depth?: number;
 }): Promise<DataforseoApiResponse<SerpLiveItem[]>> {
+  assertPaidInteger("depth", input.depth ?? SERP_ANALYSIS_DEPTH, 10, 100);
   const response = await dataforseoPost(
     "/v3/serp/google/organic/live/advanced",
     [
@@ -354,6 +356,7 @@ export async function fetchLocalSerp(input: {
   depth: number;
   searchPlaces?: boolean;
 }): Promise<DataforseoApiResponse<Record<string, unknown>[]>> {
+  assertPaidInteger("depth", input.depth, 1, 100);
   const os = input.device === "desktop" ? "windows" : "android";
 
   if (input.searchType === "maps") {
