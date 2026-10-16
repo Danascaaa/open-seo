@@ -9,6 +9,7 @@ import {
   handleAuthenticatedOpenSeoMcpRequest,
   handleSelfHostedOpenSeoMcpRequest,
 } from "@/server/mcp/transport";
+import { AppError } from "@/server/lib/errors";
 
 const selfHostedAuthMocks = vi.hoisted(() => ({
   resolveCloudflareAccessContext: vi.fn(),
@@ -198,6 +199,25 @@ describe("handleSelfHostedOpenSeoMcpRequest", () => {
         baseUrl: "https://open-seo.test",
       },
     });
+  });
+
+  // An Access service token carries no e-mail, so a machine client that omits
+  // X-OpenSEO-Service-Token reaches this path with no user identity. It must
+  // get an HTTP refusal, not an exception that crashes the Worker (error 1101).
+  it("refuses an Access request without a user identity instead of throwing", async () => {
+    selfHostedAuthMocks.resolveCloudflareAccessContext.mockRejectedValueOnce(
+      new AppError("UNAUTHENTICATED"),
+    );
+
+    const response = await handleSelfHostedOpenSeoMcpRequest(
+      createMcpRequest(),
+      "cloudflare_access",
+      {},
+      ctx,
+    );
+
+    expect(response.status).toBe(401);
+    expect(selfHostedAuthMocks.createOpenSeoMcpServer).not.toHaveBeenCalled();
   });
 
   it("answers OPTIONS preflight without resolving an auth context", async () => {
