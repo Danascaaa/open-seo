@@ -11,6 +11,8 @@ import { getHostedBaseUrl } from "@/lib/auth";
 import { MCP_SCOPE } from "@/lib/oauth-resource";
 import { resolveCloudflareAccessContext } from "@/middleware/ensure-user/cloudflareAccess";
 import { resolveLocalNoAuthContext } from "@/middleware/ensure-user/delegated";
+import type { EnsuredUserContext } from "@/middleware/ensure-user/types";
+import { asAppError, toClientError } from "@/server/lib/errors";
 import {
   createWorkersOAuthMcpProps,
   hostedWorkersOAuthMcpPropsSchema,
@@ -251,10 +253,26 @@ export async function handleSelfHostedOpenSeoMcpRequest(
     return new Response(null, { headers: MCP_CORS_HEADERS });
   }
 
-  const identity =
-    authMode === "local_noauth"
-      ? await resolveLocalNoAuthContext()
-      : await resolveCloudflareAccessContext(request.headers);
+  let identity: EnsuredUserContext;
+  try {
+    identity =
+      authMode === "local_noauth"
+        ? await resolveLocalNoAuthContext()
+        : await resolveCloudflareAccessContext(request.headers);
+  } catch (error) {
+    // Access also admits service tokens on /mcp. Their JWT carries no user
+    // e-mail, so a machine client that omits X-OpenSEO-Service-Token makes the
+    // user resolver throw. Refuse it instead of letting the exception crash
+    // the Worker (Cloudflare error 1101).
+    const appError = asAppError(error);
+    if (!appError) throw error;
+    return withMcpCors(
+      new Response(
+        `${toClientError(appError).message}. Service clients must send X-OpenSEO-Service-Token.`,
+        { status: 401 },
+      ),
+    );
+  }
   const props = createWorkersOAuthMcpProps({
     userId: identity.userId,
     userEmail: identity.userEmail,
